@@ -1,0 +1,173 @@
+module VobTest where
+
+-- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
+-- This file is part of Fenfire.
+-- 
+-- Fenfire is free software; you can redistribute it and/or modify it under
+-- the terms of the GNU General Public License as published by
+-- the Free Software Foundation; either version 2 of the License, or
+-- (at your option) any later version.
+-- 
+-- Fenfire is distributed in the hope that it will be useful, but WITHOUT
+-- ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+-- or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+-- Public License for more details.
+-- 
+-- You should have received a copy of the GNU General
+-- Public License along with Fenfire; if not, write to the Free
+-- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+-- MA  02111-1307  USA
+
+import Utils
+import Cairo
+import Vobs
+import qualified Data.List
+import Data.Map (fromList)
+import Data.Maybe (fromJust)
+import Data.IORef
+import Data.Monoid hiding (Endo)
+import Control.Applicative
+import Control.Monad.State
+import Graphics.UI.Gtk hiding (Point, Size, Layout, Color, get, fill)
+import System.Environment (getArgs)
+
+
+type Info = (String, Double, Double)
+type Data = [(String,[Info])]
+
+--myVob1 :: Vob (String, Int)
+--myVob1 = keyVob "1" $ rectBox $ pad 5 $ multiline False 20 "Hello World!"
+
+myVob2 :: Vob (String, Int)
+myVob2 = mempty --keyVob "2" $ rectBox $ label "Foo bar baz"
+
+{-
+myScene1 :: String -> Data -> Vob (String, Int)
+myScene1 t d = mconcat [ stroke $ line (center @@ "1") (center @@ "2"),
+                         translate #50 #100 $ myVob2,
+                         translate #250 #150  $ myVob1 t d ]
+-}
+
+myScene2 :: String -> Data -> Vob (String, Int)
+myScene2 t d = translate #350 #400 $ rotate #(-pi/15) $ scale #1.5 $ 
+    changeSize (\(w,h) -> (w-30, h)) $ myVob1 t d
+    
+    
+myVob1 :: String -> Data -> Vob (String, Int)
+myVob1 t d = keyVob ("vob",1) $ {-ownSize $ resize (250, 250) $-} 
+        pad 20 $ daisy t info where
+    info = fromJust (Data.List.lookup t d)
+
+
+setSize :: Cx (String, Int) Double -> Cx (String, Int) Double -> 
+           Endo (Vob (String, Int))
+setSize w h = cxLocalR #(!cxMatrix, (!w, !h))
+
+daisy :: String -> [(String, Double, Double)] -> Vob (String, Int)
+daisy target distractors = 
+      mconcat [withDash #[4] #0 $
+                   stroke (circle center #(inner + !w * radius))
+              | radius <- [0, 1/4, 9/16, 1]]
+    & mconcat [(translateTo center $
+                   rotate #(((fromIntegral i)::Double) * angle) $
+                       translate #inner #0 $ setSize w h $
+                           daisyLeaf (distractors !! i))
+               & translateTo (center @@ (name i,-1)) 
+                             (centerVob $ label $ name i)
+              | i <- [0..n-1]]
+    & translateTo center (centerVob $ label target)
+  where
+    inner = 20.0 :: Double
+    size = #(uncurry min !cxSize)
+    w = #((!size - inner)/2); h = #(!w / 20)
+    n = length distractors
+    name i = case distractors !! i of (r,_,_) -> r
+    angle :: Double
+    angle = (2.0*pi) / fromIntegral n
+
+
+likelihood correct total p = (p ** correct) * ((1 - p) ** (total - correct))
+
+fractions :: Int -> [Double]
+fractions n = [fromIntegral i / fromIntegral n | i <- [0..n]]
+
+normalize :: [Double] -> [Double]
+normalize xs = map (/s) xs where s = sum xs
+
+accumulate :: [Double] -> [Double]
+accumulate = scanl (+) 0
+
+table :: Int -> (Double -> Double) -> [Double]
+table steps f = [f (fromIntegral i / len) | i <- [0..steps-1]] where
+    len = fromIntegral (steps - 1)
+
+{-
+untable :: [Double] -> (Double -> Double)
+untable vals = f where
+    nvals = fromIntegral (length vals) :: Double; offs = 1 / nvals
+    f x = interpolate fract (vals !! idx) (vals !! idx+1) where
+        idx = floor (x / offs); fract = x/offs - fromIntegral idx
+-}
+        
+invert :: [Double] -> (Double -> Double)
+invert ys = \y -> if y < head ys then 0 else val y 0 ys where
+    val v i (x:x':xs) | x <= v && v < x' = i + offs * (v-x) / (x'-x)
+                      | otherwise        = val v (i+offs) (x':xs)
+    val _ _ _                            = 1
+    offs = 1 / fromIntegral (length ys - 1) :: Double
+
+denormalize :: [Double] -> [Double]
+denormalize xs = map (* len) xs where len = fromIntegral $ length xs
+
+daisyLeaf :: (String, Double, Double) -> Vob (String, Int)
+daisyLeaf (name, correct, total) =
+    withColor #color (fill shape) & stroke shape & mconcat pointVobs
+    & translateTo (anchor #(correct/total) #0)
+                  (ownSize $ keyVob (name,-1) mempty)
+  where
+    n = 40
+    fracts = fractions n
+    pointsA = zip fracts ys where
+        ys = denormalize $ normalize [likelihood correct total p | p <- fracts]
+    pointsB = zip xs ys where
+        xs = map f fracts
+        f = invert $ accumulate $ normalize [likelihood correct total p | p <- fracts]
+        ys = denormalize $ normalize [likelihood correct total p | p <- xs]
+    points' = pointsB
+    points = points' ++ reverse (map (\(x,y) -> (x,-y)) points')
+    pointKeys = [(name, i) | i <- [0..2*n+1]]
+    pointVobs = flip map (zip points pointKeys) $ \((x,y),k) -> 
+        translateTo (anchor #x #y) (keyVob k mempty)
+    path = [anchor #0 #0 @@ k | k <- pointKeys]
+    shape = moveTo (head path) & mconcat (map lineTo $ tail path) & closePath
+    color = interpolate (correct/total) (Color 1 0 0 0.5) (Color 0 1 0 0.5)
+
+main = do 
+    args <- getArgs
+    let fname = if length args == 0 then "DaisyData.txt" else head args
+    testdata <- readFile fname >>= return . (read :: String -> Data)
+
+    initGUI
+    window <- windowNew
+    windowSetTitle window "Vob test"
+    windowSetDefaultSize window 700 400
+
+    stateRef <- newIORef (fst $ head testdata)
+
+    let view state    = myVob1 state testdata
+        handle _event = do t <- get; let ts = map fst testdata
+                           let i = fromJust $ Data.List.elemIndex t ts
+                               i' = if i+1 >= length ts then 0 else i+1
+                           put (ts !! i')
+                           setInterp True
+
+    (canvas, _updateCanvas, _canvasAction) <- vobCanvas stateRef view handle 
+                                                        (const $ return ()) 
+                                                        (const $ return ()) 
+                                                        lightGray 3
+
+    set window [ containerChild := canvas ]
+    
+    onDestroy window mainQuit
+    widgetShowAll window
+    mainGUI

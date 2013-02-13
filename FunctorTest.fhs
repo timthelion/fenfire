@@ -1,0 +1,10 @@
+{-# OPTIONS_GHC -fallow-overlapping-instances #-}
+
+module FunctorTest where
+
+f x = "This is not a result value: " ++ show x
+
+foo s = f #(bar !s !s)
+bar = (+)
+
+main = putStrLn (foo [4,3,9::Integer])

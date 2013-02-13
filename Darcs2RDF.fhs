@@ -1,0 +1,79 @@
+-- HaRP pattern translator produces following warnings:
+{-# OPTIONS_GHC -fno-warn-name-shadowing -fno-warn-incomplete-patterns #-}
+module Darcs2RDF where
+
+import Prelude hiding (elem)
+import Text.XML.HaXml hiding (attr)
+import Data.Maybe
+import System.Environment (getArgs)
+
+data Patch = Patch { patchHash :: String, patchName :: String,
+                     patchDate :: String, patchAuthor :: String } deriving Show
+
+patches (Document _ _ (Elem "changelog" _ c) _) = map patch (elems c) where
+    patch el@(Elem "patch" _ _) = 
+        Patch (fromJust $ attr "hash" el) (fromJust $ elem "name" el)
+              (fromJust $ attr "date" el) (fromJust $ attr "author" el)
+        
+triples :: String -> Patch -> String
+triples repo (Patch hash name date author) =
+    "<"++repo++"> <" ++ seeAlso ++ "> <"++month++">.\n" ++
+    "<"++month++"> <" ++ seeAlso ++ "> <"++day++">.\n" ++
+    "<"++month++"> <" ++ label ++ "> " ++ show (take 7 date') ++ ".\n" ++
+    "<"++day++"> <" ++ seeAlso ++ "> "++uri++".\n" ++
+    "<"++day++"> <" ++ label ++ "> " ++ show (take 10 date') ++ ".\n" ++
+    uri++" <"++label++"> " ++
+        ""++show name++".\n" ++
+    uri++" <foaf:author> "++authorURI ++ ".\n" ++
+    (if not $ null authorName
+        then authorURI++" <foaf:name> "++show authorName ++ ".\n" else "") ++    
+    authorURI++" <foaf:mbox> <mailto:"++authorMail ++ ">.\n" ++
+    uri++ " <dc:date> \""++date'++ "\"^^<xsd:dateTime>.\n"    
+    where uri = "<darcs:"++hash++">"
+          -- the following uses HaRP patterns
+          [/ (/ authorName*, ' '*, '<', authorMail*, '>' /)
+           | authorMail* /] = author
+          authorURI = "<byemail:"++authorMail++">"
+          [/ y@(/_,_,_,_/),m@(/_,_/),d@(/_,_/),h@(/_,_/),mi@(/_,_/),s@(/_,_/) /] = date
+          date' = y++"-"++m++"-"++d++"T"++h++":"++mi++":"++s++"+0000"
+          month = "ex:patches:" ++ take 7 date' ++ ":" ++ repo
+          day = "ex:patches:" ++ take 10 date' ++ ":" ++ repo
+          seeAlso = "http://www.w3.org/2000/01/rdf-schema#seeAlso"
+          label = "http://www.w3.org/2000/01/rdf-schema#label"
+
+elems :: [Content] -> [Element]
+elems (CElem e : cs) = e : elems cs
+elems (_ : cs)       = elems cs
+elems []             = []
+
+attr :: String -> Element -> Maybe String
+attr name (Elem _ attrs _) = fmap getValue (lookup name attrs) where
+    getValue (AttValue l) = concatMap getValue' l
+    getValue' (Left s) = s
+    getValue' (Right ref) = [unref ref]
+    
+elem :: String -> Element -> Maybe String
+elem name (Elem _ _ cs) = findElem (elems cs) where
+    findElem (Elem n _ c : _) | n == name = Just (text c)
+    findElem (_ : cs') = findElem cs'
+    findElem [] = Nothing
+    
+unref :: Reference -> Char
+unref (RefChar c) = toEnum c
+unref (RefEntity "apos") = '\''
+unref (RefEntity "quot") = '"'
+unref (RefEntity "lt") = '<'
+unref (RefEntity "gt") = '>'
+unref (RefEntity "amp") = '&'
+unref _ = error "unimplemented reference thingie"
+    
+text :: [Content] -> String
+text (CString _ s : cs) = s ++ text cs
+text (CRef r : cs) = unref r : text cs
+text (_ : _) = error "unimplemented content thingie"
+text [] = ""
+
+
+main = do [repo] <- getArgs
+          xml <- getContents
+          putStr $ concatMap (triples repo) $ patches $ xmlParse "stdin" xml

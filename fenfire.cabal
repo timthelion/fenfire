@@ -1,0 +1,26 @@
+Name:           fenfire
+Version:        0.1
+License:        GPL
+License-file:   LICENSE
+Author:         Benja Fallenstein and Tuukka Hastrup
+Maintainer:     timothyhobbs@seznam.cz
+Synopsis:       Graph-based notetaking system
+Description:    Fenfire is a graph-based notetaking system. (We're
+                planning to add a kitchen sink soon.) It is developed 
+                on the channel #fenfire on the Freenode IRC network.
+Category:       User Interfaces
+Stability:      alpha
+Homepage:       http://fenfire.org/
+Build-Depends:  random, directory, containers, old-time, base, HaXml, gtk, mtl, unix, cairo, harp, template-haskell
+Build-Type: Custom
+Build-tools: c2hs
+Data-Files:     data/logo.svg data/logo48.png
+
+Executable:     fenfire
+Main-Is:        Fenfire.hs
+Other-Modules:  Fenfire, Vobs, RDF, Cache, Cairo, Utils, Raptor, FunctorSugar
+GHC-Options:    -Wall
+                -fno-warn-unused-imports -fno-warn-missing-signatures
+Main-is: Fenfire.hs
+Extra-Libraries: raptor
+

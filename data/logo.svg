@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="ISO-8859-1" standalone="yes"?>
+<svg width="506.441" height="709.024">
+  <defs> 
+    <marker id="ArrowEnd" viewBox="0 0 10 10" refX="0" refY="5" 
+     markerUnits="strokeWidth" 
+     markerWidth="4" 
+     markerHeight="3" 
+     orient="auto"> 
+        <path d="M 0 0 L 10 5 L 0 10 z" /> 
+    </marker>
+    <marker id="ArrowStart" viewBox="0 0 10 10" refX="10" refY="5" 
+     markerUnits="strokeWidth" 
+     markerWidth="4" 
+     markerHeight="3" 
+     orient="auto"> 
+        <path d="M 10 0 L 0 5 L 10 10 z" /> 
+    </marker> </defs>
+<g>
+<path style="stroke:#5a5176; stroke-width:18.0; fill:#bdbaff" d="M 253.328 614.689C 182.584 613.866 95.1702 558.196 94.3352 471.647C 103.523 416.226 131.382 420.319 133.052 371.727C 133.052 371.727 164.792 424.115 172.31 470.429C 153.098 352.745 189.015 373.244 175.65 280.615C 175.65 280.615 212.928 323.852 222.115 398.259C 198.729 228.946 233.322 288.245 253.293 94.3352C 268.094 288.148 307.712 228.023 284.324 397.903C 293.512 323.248 330.79 279.866 330.79 279.866C 317.427 372.806 353.34 352.237 334.132 470.315C 341.649 423.845 373.387 371.281 373.387 371.281C 375.058 420.037 402.918 415.93 412.106 471.537C 411.271 558.375 324.071 613.864 253.328 614.689z"/>
+</g>
+</svg>

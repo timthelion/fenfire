@@ -1,0 +1,191 @@
+-- For (instance (Cairo cx r, Monoid m) => Monoid (cx m)):
+{-# LANGUAGE UndecidableInstances , IncoherentInstances, OverlappingInstances, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, GeneralizedNewtypeDeriving #-}
+module Cairo where
+
+-- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
+-- This file is part of Fenfire.
+-- 
+-- Fenfire is free software; you can redistribute it and/or modify it under
+-- the terms of the GNU General Public License as published by
+-- the Free Software Foundation; either version 2 of the License, or
+-- (at your option) any later version.
+-- 
+-- Fenfire is distributed in the hope that it will be useful, but WITHOUT
+-- ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+-- or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+-- Public License for more details.
+-- 
+-- You should have received a copy of the GNU General
+-- Public License along with Fenfire; if not, write to the Free
+-- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+-- MA  02111-1307  USA
+
+import Utils
+
+import Control.Applicative
+import Control.Monad
+
+import Data.Monoid (Monoid(mappend, mempty))
+
+import Graphics.UI.Gtk hiding (Point, Size, Layout, Color, get)
+import qualified Graphics.Rendering.Cairo as C
+import Graphics.Rendering.Cairo.Matrix (Matrix(Matrix))
+import qualified Graphics.Rendering.Cairo.Matrix as Matrix
+import Graphics.UI.Gtk.Cairo
+
+data Color = Color Double Double Double Double
+type Size  = (Double, Double)
+type Point = (Double, Double)
+type Rect  = (Matrix, Size)
+
+type Render a = C.Render a
+newtype Path  = Path { renderPath :: Render () }    deriving Monoid
+
+class (Applicative cx, Monoid r) => 
+      Cairo cx r | cx -> r, r -> cx where
+    cxAsk    :: cx Rect
+    cxLocal  :: cx Rect -> Endo (cx a)
+    
+    cxWrap   :: EndoM cx (Render ()) -> Endo r
+    cxLocalR :: cx Rect -> Endo r
+
+    cxRender :: cx (Render ()) -> r
+    cxRender r = cxWrap (const r) mempty
+    
+instance Monoid (Render ()) where
+    mempty = return ()
+    mappend = (>>)
+
+instance (Applicative m, Monoid o) => Monoid (m o) where
+    mempty = pure mempty
+    mappend = liftA2 mappend
+        
+instance Cairo ((->) Rect) (Rect -> Render ()) where
+    cxAsk = id
+    cxLocal f m r = m (f r)
+    
+    cxWrap f ren r = f (ren r) r
+    cxLocalR f ren r = ren (f r)
+
+newtype InContext a b = InContext { appContext :: a -> b } deriving Monoid
+
+instance Cairo cx r => Cairo (Comp ((->) a) cx) (InContext a r) where
+    cxAsk = Comp (const cxAsk)
+    cxLocal (Comp f) (Comp m) = Comp $ \a -> cxLocal (f a) (m a)
+    
+    cxWrap f c = InContext $ \a -> cxWrap (\ren -> (fromComp $ f ren) a)
+                                          (c `appContext` a)
+    cxLocalR f c = InContext $ \a -> cxLocalR (fromComp f a) (c `appContext` a)
+
+cxMatrix :: Cairo cx r => cx Matrix
+cxMatrix = fmap fst cxAsk
+
+cxSize :: Cairo cx r => cx Size
+cxSize = fmap snd cxAsk
+
+
+[black, gray, lightGray, white] = [Color x x x 1 | x <- [0, 0.5, 0.9, 1]]
+
+
+fill :: Cairo cx r => cx Path -> r
+fill p = cxRender $ forA2 p cxMatrix $ \p' m -> do
+    renderPath p'; C.save; C.transform m; C.fill; C.restore
+
+stroke :: Cairo cx r => cx Path -> r
+stroke p = cxRender $ forA2 p cxMatrix $ \p' m -> do
+    renderPath p'; C.save; C.transform m; C.stroke; C.restore
+
+paint :: Cairo cx r => r
+paint = cxRender $ pure C.paint
+
+clip :: Cairo cx r => cx Path -> Endo r
+clip p = cxWrap $ \ren -> ffor p $ \p' -> do
+    C.save; renderPath p'; C.clip; ren; C.restore
+    
+    
+withColor :: Cairo cx r => cx Color -> Endo r
+withColor c = cxWrap $ \ren -> ffor c $ \(Color r g b a) -> do
+    C.save; C.setSourceRGBA r g b a; ren; C.restore
+    
+withDash :: Cairo cx r => cx [Double] -> cx Double -> Endo r
+withDash a b = cxWrap $ \ren -> #(C.save >> C.setDash !a !b >> ren >> C.restore)
+    
+transform :: Cairo cx r => cx (Endo Matrix) -> Endo r
+transform f = cxLocalR #(!f Matrix.identity * !cxMatrix, !cxSize)
+
+-- | Moves a renderable by x and y.
+--
+translate :: Cairo cx r => cx Double -> cx Double -> Endo r
+translate x y = transform $ liftA2 Matrix.translate x y
+
+-- | Moves a renderable to the specific point p.
+--
+translateTo :: Cairo cx r => cx Point -> Endo r
+translateTo p = translate x y where
+    (x,y) = funzip #(Matrix.transformPoint (Matrix.invert !cxMatrix) !p)
+
+-- | Rotates a renderable by angle.
+--
+rotate :: Cairo cx r => cx Double -> Endo r
+rotate angle = transform $ fmap Matrix.rotate angle
+
+-- | Scales a renderable by sx and sy.
+--
+scale2 :: Cairo cx r => cx Double -> cx Double -> Endo r
+scale2 sx sy = transform $ liftA2 Matrix.scale sx sy
+    
+-- | Scales a renderable by sc.
+--
+scale :: Cairo cx r => cx Double -> Endo r
+scale sc = scale2 sc sc
+
+
+between :: Cairo cx r => cx Point -> cx Point -> Endo r
+between p1 p2 = translate #(avg !x1 !x2) #(avg !y1 !y2)
+              . rotate #(atan2 (!y2 - !y1) (!x2 - !x1)) 
+    where (x1,y1) = funzip p1; (x2,y2) = funzip p2
+
+
+point :: Cairo cx r => cx Double -> cx Double -> cx Point
+point x y = #(Matrix.transformPoint !cxMatrix (!x,!y))
+
+anchor :: Cairo cx r => cx Double -> cx Double -> cx Point
+anchor x y = #(Matrix.transformPoint !cxMatrix (!x * !w, !y * !h))
+    where (w,h) = funzip cxSize
+
+center :: Cairo cx r => cx Point
+center = anchor #0.5 #0.5
+
+closePath :: Cairo cx r => cx Path
+closePath = pure $ Path $ C.closePath
+
+arc :: Cairo cx r => cx Point -> cx Double -> cx Double -> cx Double -> cx Path
+arc p a b c = #(Path $ do
+    let (x,y) = Matrix.transformPoint (Matrix.invert !cxMatrix) !p
+    C.save; C.transform !cxMatrix; C.arc x y !a !b !c; C.restore)
+
+arcNegative :: Cairo cx r => cx Point -> cx Double -> cx Double -> cx Double -> 
+               cx Path
+arcNegative p a b c = #(Path $ do
+    let (x,y) = Matrix.transformPoint (Matrix.invert !cxMatrix) !p
+    C.save; C.transform !cxMatrix; C.arcNegative x y !a !b !c; C.restore)
+
+circle :: Cairo cx r => cx Point -> cx Double -> cx Path
+circle p r = arc p r #0 #(2*pi)
+
+curveTo :: Cairo cx r => cx Point -> cx Point -> cx Point -> cx Path
+curveTo p1 p2 p3 = forA3 p1 p2 p3 $ \(x1,y1) (x2,y2) (x3,y3) ->
+                       Path $ C.curveTo x1 y1 x2 y2 x3 y3
+
+moveTo :: Cairo cx r => cx Point -> cx Path
+moveTo p = ffor p $ \(x,y) -> Path $ do C.moveTo x y
+
+lineTo :: Cairo cx r => cx Point -> cx Path
+lineTo p = ffor p $ \(x,y) -> Path $ do C.lineTo x y
+
+line :: (Cairo cx r, Monoid (cx Path)) => cx Point -> cx Point -> cx Path
+line p1 p2 = moveTo p1 & lineTo p2
+
+extents :: (Cairo cx r, Monoid (cx Path)) => cx Path
+extents = moveTo (anchor #0 #0) & lineTo (anchor #0 #1) & lineTo (anchor #1 #1)
+        & lineTo (anchor #1 #0) & lineTo (anchor #0 #0)

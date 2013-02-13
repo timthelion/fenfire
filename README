@@ -1,0 +1,81 @@
+===================
+Fenfire version 0.1
+===================
+
+
+Introduction
+============
+
+Fenfire is a graph-based notetaking system. (We're planning to add a
+kitchen sink soon.) It is developed on the channel #fenfire on the
+Freenode IRC network.
+
+
+The source code is available using Darcs.
+    darcs get http://antti-juhani.kaijanaho.fi/darcs/fenfire-hs
+
+
+Requirements for compilation
+============================
+
+Fenfire source code
+
+Dependencies with known-to-work version numbers:
+
+  ghc    6.6    (The Glorious Glasgow Haskell Compilation System)
+  gtk2hs 0.9.11 (A GUI library for Haskell based on Gtk, release candidate ok)
+  raptor 1.4.9  (Raptor RDF Parser Toolkit)
+  c2hs   0.14.5 (C->Haskell, An Interface Generator for Haskell)
+  harp   0.2    (Haskell Regular Patterns, in haskell-src-exts)
+  haxml  1.13.2 (Haskell and XML)
+  happy  1.15   (The Parser Generator for Haskell)
+  alex   2.0.1  (A lexical analyser generator for Haskell)
+
+(Packages in Debian: ghc6 libghc6-gtk-dev libraptor1-dev c2hs libghc6-harp-dev 
+ libghc6-haxml-dev happy alex)
+
+
+Running a precompiled binary only requires:
+gmp             (The GNU MP Bignum Library)
+gtk             (The GIMP Toolkit)
+raptor          (Raptor RDF Parser Toolkit)
+
+(Packages in Debian: libgmp3c2 libgtk2.0-0 libraptor1)
+
+
+Compiling and running
+=====================
+
+Fenfire-hs is packaged using the Haskell Cabal, which means you can use the 
+following commands to configure, build, and install it to your home directory:
+
+runhaskell Setup.hs configure --user --prefix ~
+runhaskell Setup.hs build
+runhaskell Setup.hs install
+
+After this, you can start the application like this:
+
+~/bin/fenfire
+
+You will see the application launch with a new graph where you can
+start adding your notes using the Edit menu and the included key bindings.
+
+* The current node is highlighted in blue.
+
+* To write into the current node, move to the text box at the bottom
+  of the window using Tab or the mouse. After you've finished typing,
+  use Tab or the mouse to get back to the graph box.
+
+* Use the Edit menu or the keybindings indicated in the Edit menu to
+  - create new nodes
+  - mark the current node, or connect the current node to the
+    previously marked node(s)
+  - break connections between nodes
+
+* Use the arrow keys to move between nodes:
+  - Left and Right move to the node directly left or directly right
+    from the current node.
+  - Up and Down scroll through the nodes connected to the current node.
+  - Instead of Left/Right/Up/Down, you can also use j/l/i/comma.
+
+You cannot currently use the mouse to move around the structure.
