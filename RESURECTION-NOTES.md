@@ -1,3 +1,6 @@
+This resurection was successful:
+======================
+![Screen shot of fenfire running ghc 7.4.2](screenshots/fenfire-ghc-7.4.2.png)
 .fhs and .chs files
 ===================
 
@@ -83,7 +86,7 @@ Moving on to type errors:
 The type of `PPSuffixHandler` has changed. Now that last part, with the two `FilePath`s and the `Verbosity` level must be moved over to a `PreProcessor` data constructor: described [here](http://hackage.haskell.org/packages/archive/Cabal/latest/doc/html/src/Distribution-Simple-PreProcess.html#PreProcessor).  We also have to change our verbosity checks to use the new `Verbosity` data types.  Luckly, `Verbosity` type has an Ord instance, so no logic must change.  All we do is replace `verbisity > 3` with `verbosity >= verbose` type has an Ord instance, so no logic must change.  All we do is replace `verbisity > 3` with `verbosity >= verbose` and `import Distribution.Verbosity`.
 
 Setup.lhs now builds, but we're far from done
--------------------------
+====================================
 
 
     Warning: No 'build-type' specified. If you do not need a custom Setup.hs or
@@ -170,7 +173,7 @@ Google to the rescue [again](http://therning.org/magnus/archives/tag/c2hs)  I ne
     {-# LANGUAGE ForeignFunctionInterface #-}
 
 The next error is super interesting:
----------------------
+==========================
 
     Cache.hs:51:15: parse error on input `let'
 
@@ -342,6 +345,7 @@ Another error:
 
 Looking at `dist/build/fenfire/fenfire-tmp/Vobs.hs`
 the file is empty.  `./preprocessor` clearly didn't like something here.
+==========================================
 
 Trying out the preprocessor by hand we get an overlooked error:
 
@@ -417,6 +421,10 @@ And maybeReturn is defined in `Utils.hs` as:
     maybeReturn :: MonadPlus m => Maybe a -> m a
     maybeReturn = maybe mzero return
 
+
+TODO TODO Fix this!
+-----------------
+
 I changed the lines to this
 
     (@@) :: Ord k => Cx k a -> k -> Cx k a   -- pronounce as 'of'
@@ -427,14 +435,14 @@ I changed the lines to this
                       local (\_ -> cx { rcRect = rect }) x
 
 
-TODO TODO Fix this!
-
 Then I had to go through the code fixing ambiguous instances where `Control.Exception.catch` was used.  That is, replace `show e`s with `show (e::Control.Exception.IOException)`s
 
 And finally I had an executable.  Still not sure if it'll run :D
 
 AND IT OPENS!!!!
+------------------
 
 It runs!!!
 
 And it's fast!
+======================
