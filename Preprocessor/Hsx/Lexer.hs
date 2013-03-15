@@ -202,7 +202,6 @@ reserved_ids = [
  ( "infixr", 	KW_InfixR ),
  ( "instance",  KW_Instance ),
  ( "let", 	KW_Let ),
- ( "mdo",       KW_MDo ),
  ( "rec",       KW_Rec ),
  ( "module", 	KW_Module ),
  ( "newtype",   KW_NewType ),

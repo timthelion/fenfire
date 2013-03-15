@@ -494,7 +494,6 @@ data HsExp
 	| HsDo [HsStmt]			-- ^ @do@-expression:
 					-- the last statement in the list
 					-- should be an expression.
-	| HsMDo [HsStmt]		-- ^ @mdo@-expression
 	| HsRec [HsStmt]		-- ^ @rec@-expression
 	| HsTuple [HsExp]		-- ^ tuple expression
 	| HsList [HsExp]		-- ^ list expression

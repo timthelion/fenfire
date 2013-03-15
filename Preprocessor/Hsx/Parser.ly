@@ -178,7 +178,6 @@ Reserved Ids
 >	'infixr'	{ KW_InfixR }
 >	'instance'	{ KW_Instance }
 >	'let'		{ KW_Let }
->	'mdo'		{ KW_MDo }
 >	'rec'		{ KW_Rec }
 >	'module'	{ KW_Module }
 >	'newtype'	{ KW_NewType }
@@ -712,7 +711,6 @@ A let may bind implicit parameters
 >	: 'case' exp 'of' altslist	{ HsCase $2 $4 }
 >	| '-' fexp			{ HsNegApp $2 }
 >  	| 'do' stmtlist			{ HsDo $2 }
->  	| 'mdo' stmtlist		{ HsMDo $2 }
 >  	| 'rec' stmtlist		{ HsRec $2 }
 >	| reifyexp			{ HsReifyExp $1 }
 >	| fexp				{ $1 }

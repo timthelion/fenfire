@@ -289,9 +289,6 @@ checkExpr e = case e of
 	HsDo stmts		  -> do
 				     stmts <- mapM checkStmt stmts
 				     return (HsDo stmts)
-	HsMDo stmts		  -> do
-				     stmts <- mapM checkStmt stmts
-				     return (HsMDo stmts)
 	HsRec stmts		  -> do
 				     stmts <- mapM checkStmt stmts
 				     return (HsRec stmts)

@@ -579,8 +579,6 @@ instance Pretty HsExp where
 		$$$ ppBody caseIndent (map pretty altList)
 	pretty (HsDo stmtList) =
 		text "do" $$$ ppBody doIndent (map pretty stmtList)
-	pretty (HsMDo stmtList) =
-		text "mdo" $$$ ppBody doIndent (map pretty stmtList)
 	pretty (HsRec stmtList) =
 		text "rec" $$$ ppBody doIndent (map pretty stmtList)
 	-- Constructors & Vars

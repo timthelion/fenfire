@@ -406,6 +406,7 @@ After wading through more banalities we find:
 The seccond error was due to my own carelessness. I acidentally hooked up the `fill` token to `Graphics.Rendering.Cairo` when I wanted to use the custom `fill` function described in `Cairo.fhs`.
 
 The first error appears to relate to these lines:
+================================================
 
     (@@) :: Ord k => Cx k a -> k -> Cx k a   -- pronounce as 'of'
     (@@) x key = do cx <- ask
@@ -446,3 +447,15 @@ It runs!!!
 
 And it's fast!
 ======================
+
+Clean up.
+============
+* Remove all `mdo` stuff from the preprocessor's code.
+Fix `(@@)`
+
+I also I noticed that it wasn't saving things and restoring them correctly
+===================================
+
+Tuukka Hastrup, one of the old authors mentioned to me, that the [RDF stuff](http://www.w3.org/TR/rdf-mt/) might not be up to par.  I didn't like the fact that we were using raptor1 in the first place for RDF support.  It makes no sense for Haskell, which is good at data manipulation, to be handing C, which isn't so great at data manipulation, a data manipulation task.  At least, when there is no real performance barrier to usign Haskell.
+
+Since fenfire was written, Haskell has gotten [it's own RDF support](http://hackage.haskell.org/package/rdf4h-1.1.0)  So I decided to try migrating to using that instead.

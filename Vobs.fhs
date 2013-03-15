@@ -28,7 +28,7 @@ import System.IO.Unsafe (unsafePerformIO)
 import qualified System.Time
 
 import Control.Applicative
-import Control.Monad.Reader
+import Control.Monad.Reader (ask,Reader)
 import Control.Monad.Trans (liftIO, MonadIO)
 
 import Graphics.UI.Gtk hiding (Point, Size, Layout, Color, get)
@@ -117,11 +117,12 @@ runHandler handleEvent state event = do
 
 
 (@@) :: Ord k => Cx k a -> k -> Cx k a   -- pronounce as 'of'
-(@@) x key = do cx <- ask
-                rectM <- maybeReturn $ Map.lookup key (rcScene cx)
-                case rectM of
-                 Just rect ->
-                  local (\_ -> cx { rcRect = rect }) x
+(@@) x key = do
+ { cx <- ask
+ ; rectM <- maybeReturn $ Map.lookup key (rcScene cx)
+ ; case rectM of
+   Just rect ->
+    local (\_ -> cx { rcRect = rect }) x }
 
 
 changeSize :: Ord k => Endo Size -> Endo (Vob k)

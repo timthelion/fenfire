@@ -299,9 +299,6 @@ transformExp e = case e of
 	HsDo stmts -> do
 		stmts' <- fmap concat $ mapM (transformStmt Do) stmts
 		return $ HsDo stmts'
-	HsMDo stmts -> do
-		stmts' <- fmap concat $ mapM (transformStmt Do) stmts
-		return $ HsMDo stmts'
 	HsRec stmts -> do
 		stmts' <- fmap concat $ mapM (transformStmt Do) stmts
 		return $ HsRec stmts'
