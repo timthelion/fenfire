@@ -1,4 +1,4 @@
-module VobTest where
+module Fenfire.VobTest where
 
 -- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
 -- This file is part of Fenfire.
@@ -18,9 +18,9 @@ module VobTest where
 -- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
 -- MA  02111-1307  USA
 
-import Utils
-import Cairo
-import Vobs
+import Fenfire.Utils
+import Fenfire.Cairo
+import Fenfire.Vobs
 import qualified Data.List
 import Data.Map (fromList)
 import Data.Maybe (fromJust)
@@ -162,8 +162,9 @@ main = do
                            setInterp True
 
     (canvas, _updateCanvas, _canvasAction) <- vobCanvas stateRef view handle 
-                                                        (const $ return ()) 
-                                                        (const $ return ()) 
+                                                        (\_   -> return ()) 
+                                                        (\_ _ -> return ()) 
+                                                        (\_   -> return ())
                                                         lightGray 3
 
     set window [ containerChild := canvas ]

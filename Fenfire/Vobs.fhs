@@ -1,5 +1,5 @@
 {-# LANGUAGE OverlappingInstances, DoRec, TypeSynonymInstances, FlexibleInstances, MultiParamTypeClasses #-}
-module Vobs where
+module Fenfire.Vobs where
 
 -- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
 -- This file is part of Fenfire.
@@ -19,16 +19,19 @@ module Vobs where
 -- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
 -- MA  02111-1307  USA
 
-import Utils
+import Fenfire.Utils
 
-import Cairo
+import Fenfire.Cairo
+
+import Fenfire.Latex2Png
+import qualified Fenfire.Cache as Cache
 
 import Data.IORef
 import System.IO.Unsafe (unsafePerformIO)
 import qualified System.Time
 
 import Control.Applicative
-import Control.Monad.Reader (ask,Reader)
+import Control.Monad.Reader
 import Control.Monad.Trans (liftIO, MonadIO)
 
 import Graphics.UI.Gtk hiding (Point, Size, Layout, Color, get)
@@ -43,12 +46,13 @@ import Data.List (intersect)
 import Data.Map (Map, keys, fromList, toList, insert, empty)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, isJust)
-import Data.Monoid (Monoid(mempty, mappend))
+import Data.Monoid (Monoid(mempty, mappend, mconcat))
 
 import Control.Monad (when)
 import Control.Monad.State
 import Control.Monad.Reader
 
+import qualified Control.Exception
 
 type Scene k  = Map k (Maybe (Matrix, Size))
 data Vob k    = Vob { defaultSize :: Size,
@@ -115,7 +119,11 @@ runHandler handleEvent state event = do
         runStateT (runStateT (handleEvent event) state) (False, True)
     return (state',interpolate',handled)
 
-
+{-
+(@@) :: Ord k => Cx k a -> k -> Cx k a   -- pronounce as 'of'
+(@@) x key = do cx <- ask
+                rect <- maybeReturn =<< Map.lookup key (rcScene cx)
+                local (\_ -> cx { rcRect = rect }) x-}
 (@@) :: Ord k => Cx k a -> k -> Cx k a   -- pronounce as 'of'
 (@@) x key = do
  { cx <- ask
@@ -123,6 +131,7 @@ runHandler handleEvent state event = do
  ; case rectM of
    Just rect ->
     local (\_ -> cx { rcRect = rect }) x }
+
 
 
 changeSize :: Ord k => Endo Size -> Endo (Vob k)
@@ -156,13 +165,28 @@ keyVob key vob = vob {
     renderVob = \cx -> 
         maybeDo (maybeReturn =<< (Map.lookup key $ rcScene cx)) $ \rect ->
             renderVob vob $ cx { rcRect = rect } }
+            
+showAtKey :: Ord k => k -> Endo (Vob k)
+showAtKey key vob = vob {
+    vobScene = \cx -> let mrect = maybeReturn =<< Map.lookup key (rcScene cx)
+                          mcx = fmap (\rect' -> cx { rcRect=rect' }) mrect
+                          msc = liftM (vobScene vob) mcx
+                      in Map.mapWithKey (\k _ -> msc >>= (Map.! k)) 
+                                        (vobScene vob cx),
+    renderVob = \cx -> 
+        maybeDo (maybeReturn =<< (Map.lookup key $ rcScene cx)) $ \rect ->
+            renderVob vob $ cx { rcRect = rect } }
         
 
 rectBox :: Ord k => Endo (Vob k)
 rectBox vob = useBgColor (fill extents) & clip extents vob & 
               useFgColor (stroke extents)
+              
+vbox :: Ord k => [Vob k] -> Vob k
+vbox vobs = mconcat [translate #0 #y $ ownSize v | (v,y) <- zip vobs ys] where
+    ys = scanl (+) 0 $ map defaultHeight $ init vobs
+    
         
-
 pangoContext :: PangoContext
 pangoContext = unsafePerformIO $ do
     context <- cairoCreateContext Nothing
@@ -198,7 +222,39 @@ multiline useTextWidth widthInChars s = unsafePerformIO $ do
         h = maximum [h1, h2, h3]
     return $ renderable (realToFrac w, realToFrac h) $ showLayout layout
 
+getSurfaceSize :: C.Surface -> IO (Int,Int)
+getSurfaceSize surface = do
+    w <- C.renderWith surface $ C.imageSurfaceGetWidth surface
+    h <- C.renderWith surface $ C.imageSurfaceGetHeight surface
+    return (w,h)
+
+createImageSurfaceFromPNG :: FilePath -> IO C.Surface
+createImageSurfaceFromPNG file = 
+    C.withImageSurfaceFromPNG file $ \surface -> do
+        (w,h) <- getSurfaceSize surface
+        surface' <- C.createImageSurface C.FormatARGB32 w h
+        C.renderWith surface' $ do
+            C.setSourceSurface surface 0 0            
+            C.rectangle 0 0 (realToFrac w) (realToFrac h)
+            C.fill
+        return surface'
                           
+-- image :: Ord k => FilePath -> Vob k
+image file = {- unsafePerformIO $ -} do
+    surface <- createImageSurfaceFromPNG file
+    (w,h) <- getSurfaceSize surface
+    return $ changeSize (const (realToFrac w, realToFrac h)) $ 
+        withSurface #surface $ fill extents
+
+latexCache :: Cache.Cache String (Vob k)
+latexCache = Cache.newCache 10000
+
+latex :: Ord k => String -> Vob k
+latex code = Cache.cached code latexCache $ unsafePerformIO $ do
+    withLatexPng code $ maybe (return $ setFgColor (Color 0.7 0.5 0.1 1) 
+                                      $ useFgColor $ multiline False 20 code) 
+                              ({- return . -} image)
+
 fadedColor :: Ord k => Endo (Cx k Color)
 fadedColor c = liftM3 interpolate (asks rcFade) (asks rcFadeColor) c
 
@@ -237,6 +293,10 @@ pad2 x y   = pad4 x x y y
 
 pad :: Ord k => Double -> Endo (Vob k)
 pad pixels = pad2 pixels pixels
+
+scaleVob :: Ord k => Double -> Endo (Vob k)
+scaleVob sc vob = scale #sc $ vob { defaultSize = (sc*w, sc*h) } where
+    (w,h) = defaultSize vob
     
     
 class Interpolate a where
@@ -260,8 +320,10 @@ interpolateScene fract sc1 sc2 =
     fromList [(key, liftM2 f (sc1 Map.! key) (sc2 Map.! key)) 
              | key <- interpKeys] where
         interpKeys = intersect (keys sc1) (keys sc2)
-        f (m1,(w1,h1)) (m2,(w2,h2)) = (i m1 m2, (i w1 w2, i h1 h2))
+        f (m1,(w1,h1)) (m2,(w2,h2)) = (i m1 m2, (j w1 w2, j h1 h2))
         i x y = interpolate fract x y
+        -- don't bounce width and height, it usually doesn't look good:
+        j x y = interpolate (max 0 $ min 1 $ fract) x y
              
 
 isInterpUseful :: Ord k => Scene k -> Scene k -> Bool             
@@ -273,7 +335,6 @@ isInterpUseful sc1 sc2 =
           interpKeys = intersect (getKeys sc1) (getKeys sc2)
           getKeys sc = [k | k <- keys sc, isJust (sc Map.! k)]
           
-
 timeDbg :: MonadIO m => String -> Endo (m ())
 timeDbg s act | False     = do out s; act; out s
               | otherwise = act
@@ -303,18 +364,20 @@ interpAnim startTime interpDuration sc1 sc2 time =
 noAnim scene = const (scene, False)
     
 
-vobCanvas :: Ord b => IORef a -> View a b -> Handler Event a -> 
-                      Handler c a -> (a -> IO ()) -> Color -> TimeDiff ->
+vobCanvas :: (Control.Exception.Exception e, Ord b) => IORef a -> View a b -> Handler Event a -> 
+                      Handler c a -> (a -> a -> IO ()) -> 
+                      (e -> IO ()) -> 
+                      Color -> TimeDiff ->
                       IO (DrawingArea, Bool -> IO (), c -> IO Bool)
 vobCanvas stateRef view eventHandler actionHandler stateChanged 
-          bgColor animTime = do
+          handleException bgColor animTime = do
     canvas <- drawingAreaNew
     
     widgetSetCanFocus canvas True
     
     animRef <- newIORef (mempty, Map.empty, noAnim Map.empty)
     
-    let getWH = do (cw, ch) <- drawingAreaGetSize canvas
+    let getWH = do (cw, ch) <- widgetGetSize canvas
                    return (fromIntegral cw, fromIntegral ch)
                    
         getVob = do state <- readIORef stateRef
@@ -324,7 +387,7 @@ vobCanvas stateRef view eventHandler actionHandler stateChanged
             size <- getWH; return $ RenderContext {
                 rcScene=sc, rcRect=(Matrix.identity, size), rcFade=1,
                 rcFgColor=black, rcBgColor=white, rcFadeColor=bgColor }
-                   
+
         updateAnim interpolate' = do
             rec (vob,scene,_) <- readIORef animRef
                 vob' <- getVob
@@ -341,15 +404,22 @@ vobCanvas stateRef view eventHandler actionHandler stateChanged
 
         handle handler event = do
             state <- readIORef stateRef
+            Control.Exception.catch 
+                (do (state', interpolate', handled) <- 
+                        runHandler handler state event
 
-            (state', interpolate', handled) <- 
-                runHandler handler state event
+                    when handled $ do writeIORef stateRef state'
+                                      stateChanged state state'
+                                      updateAnim interpolate'
 
-            when handled $ do writeIORef stateRef state'
-                              stateChanged state'
-                              updateAnim interpolate'
+                    return handled )
+                (\e -> do
+                    putStr ("Exception in event: ") >> print e
+                    writeIORef stateRef state
+                    stateChanged state state -- XXX how to write this?
 
-            return handled
+                    handleException e
+                    return True )
 
         handleEvent = handle eventHandler
 
@@ -375,7 +445,7 @@ vobCanvas stateRef view eventHandler actionHandler stateChanged
         return True
     
     onExpose canvas $ \(Expose {}) -> do
-        drawable <- drawingAreaGetDrawWindow canvas
+        drawable <- widgetGetDrawWindow canvas
         
         (vob, _, anim) <- readIORef animRef;  time <- getTime
         let (scene, rerender) = anim time

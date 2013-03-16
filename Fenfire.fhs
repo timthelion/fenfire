@@ -1,1000 +1,293 @@
-{-# LANGUAGE OverlappingInstances, ImplicitParams , DoRec #-}
-module Main where
+{-# LANGUAGE OverlappingInstances, ImplicitParams #-}
+module Fenfire where
 
 -- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
 -- This file is part of Fenfire.
---
+-- 
 -- Fenfire is free software; you can redistribute it and/or modify it under
 -- the terms of the GNU General Public License as published by
 -- the Free Software Foundation; either version 2 of the License, or
 -- (at your option) any later version.
---
+-- 
 -- Fenfire is distributed in the hope that it will be useful, but WITHOUT
 -- ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 -- or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
 -- Public License for more details.
---
+-- 
 -- You should have received a copy of the GNU General
 -- Public License along with Fenfire; if not, write to the Free
 -- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
 -- MA  02111-1307  USA
 
-import qualified Cache
-import Cairo hiding (rotate)
-import Vobs
-import Utils
-import RDF
-
-import Paths_fenfire (getDataFileName)
-
-import qualified Raptor (filenameToTriples, triplesToFilename, Identifier(..))
+import qualified Fenfire.Cache as Cache
+import Fenfire.Cairo hiding (rotate, Path)
+import Fenfire.Vobs
+import Fenfire.Utils
+import qualified Fenfire.Raptor as Raptor
+import Fenfire.URN5
+import Fenfire.RDF
 
 import qualified Data.Map as Map
 import qualified Data.Set as Set
-import qualified Data.Tree as Tree
-import qualified Data.List
+import qualified Data.List as List
 import Data.Set (Set)
-import Data.IORef
-import Data.Maybe (fromJust, isJust, isNothing, catMaybes)
-import Data.Monoid(Monoid(mconcat), Dual(Dual), getDual)
+import Data.Maybe (fromMaybe, fromJust, isJust, isNothing, catMaybes, 
+                   listToMaybe)
+import Data.Monoid(Monoid(mempty, mconcat))
 
 import Control.Applicative
-import Control.Monad (when, guard, msum)
-import Control.Monad.Reader (ReaderT, runReaderT, local, ask, asks)
-import Control.Monad.State (StateT, get, gets, modify, put, execStateT)
-import Control.Monad.Trans (lift, liftIO)
-import Control.Monad.Writer (Writer, execWriter, tell)
+import Control.Monad (when, guard, mplus, msum, liftM, join)
 
-import Graphics.UI.Gtk hiding (Color, get, disconnect)
-import Graphics.UI.Gtk.Gdk.Events as E
+import qualified Network.URI
 
-import qualified Control.Exception
-import System.Directory (canonicalizePath)
-import System.Environment (getArgs, getProgName)
 import System.Mem.StableName
-import System.Random (randomRIO)
 
-data ViewSettings = ViewSettings { hiddenProps :: [Node] }
+data ViewSettings = ViewSettings { hiddenProps :: [Node], maxCenter :: Int }
+data FenState = FenState {
+    fsGraph :: Graph, fsPath :: Path, fsMark :: Mark,
+    fsFilePath :: FilePath, fsGraphModified :: Bool, fsHasFocus :: Bool,
+    fsView :: Int, fsProperty :: Node, fsProperties :: Set Node,
+    fsUndo :: [(Graph,Path)], fsRedo :: [(Graph,Path)]}
+    
+fsNode :: FenState -> Node
+fsNode (FenState { fsPath = Path node _ }) = node
 
-data FenState
- = FenState
- { fsRotation :: Rotation
- , fsMark :: Mark
- , fsFilePath :: FilePath
- , fsGraphModified :: Bool
- , fsHasFocus :: Bool }
+fsRotation :: (?vs :: ViewSettings, ?graph :: Graph) => FenState -> Rotation
+fsRotation = fromPath . fsPath
+                           
+type Views = [(String, View FenState Node)]
 
-data Rotation
- = Rotation Graph Node Int
-    deriving (Eq, Show)
+data Rotation = Rotation { rotationNode :: Node, rotationOffs :: Int }
+        deriving (Eq, Show)
 
-getRotation
- :: (?vs :: ViewSettings)
- => Graph
- -> Node
- -> Node
- -> Dir
- -> Node
- -> Maybe Rotation
-getRotation graph node prop dir node' = do
- { i <- Data.List.elemIndex
-         (prop, node')
-         (conns graph node dir)
- ; let r = i - (length (conns graph node dir) `div` 2)
- ; return $ Rotation graph node r}
-
-connsCache :: Cache.Cache (StableName Graph, (Node, Dir)) [(Node, Node)]
+fromPath :: (?vs :: ViewSettings, ?graph :: Graph) => Path -> Rotation
+fromPath path@(Path node (Conn _ dir _ : _)) = fromMaybe (Rotation node 0) $ do
+    let c = conns node dir
+    i <- List.elemIndex path c
+    return $ Rotation node (i - min (length c `div` 2) (maxCenter ?vs))
+fromPath (Path node []) = Rotation node 0
+                     
+toPath :: (?vs :: ViewSettings, ?graph :: Graph) =>
+          Rotation -> Dir -> Maybe Path
+toPath (Rotation node r) dir = let c = conns node dir in
+    c !? (min (length c `div` 2) (maxCenter ?vs) + r)
+    
+toPath' rot@(Rotation node _) =
+    head $ catMaybes [toPath rot Pos, toPath rot Neg, Just $ Path node []]
+    
+connsCache :: Cache.Cache (StableName Graph, (Node, Dir)) [Path]
 connsCache = Cache.newCache 10000
 
-dc_date = URI "dc:date"
+dc_date = IRI "http://purl.org/dc/elements/1.1/date"
+dcterms_created = IRI "http://purl.org/dc/terms/created"
 
-conns
- :: (?vs :: ViewSettings)
- => Graph
- -> Node
- -> Dir
- -> [(Node, Node)]
-conns g node dir = cached where
- cached = Cache.cached (Cache.byAddress g, (node,dir)) connsCache result
- result = Data.List.sortBy cmp' list
- list = [(p,n) |
-         (p,s) <- Map.toList $ getConns g node dir
-         ,not (p `elem` hiddenProps ?vs)
-         ,n <- Set.toList s]
- cmp n1 n2 | p n1 && p n2 = compare (f n1) (f n2)
-  where
-   p n = hasConn g n dc_date Pos
-   f n = getOne g n dc_date Pos
- cmp n1 n2 = compare (getText g n1) (getText g n2)
- cmp' (p1,n1) (p2,n2) = catOrds (cmp p1 p2) (cmp n1 n2)
- catOrds EQ o = o; catOrds o _ = o
+conns :: (?vs :: ViewSettings, ?graph :: Graph) => Node -> Dir -> [Path]
+conns node dir = Cache.cached (Cache.byAddress ?graph, (node,dir))
+                              connsCache result where
+    result = map (\(prop, node') -> Path node [Conn prop dir node']) sorted
+    sorted = List.sortBy cmp' list
+    cquery (x,p,y) = case dir of Pos -> iquery (x,p,y); Neg -> iquery (y,p,x)
+    list = [(p,n) | p <- cquery (node, X, Any),
+                    not (p `elem` hiddenProps ?vs), 
+                    n <- cquery (node, p, X) ]
+    cmp n1 n2 | Just d1 <- f n1, Just d2 <- f n2 = compare d1 d2 where
+        f n = msum [g dc_date n, g dcterms_created n]
+        g prop n = iquery (n, prop, X) :: Maybe Node
+    cmp n1 n2 = compare (f n1) (f n2) where
+        f n = maybe (Left n) Right $ getText n
+    cmp' (p1,n1) (p2,n2) = catOrds (cmp p1 p2) (cmp n1 n2)
+    catOrds EQ o = o; catOrds o _ = o
 
-getConn
- :: (?vs :: ViewSettings)
- => Rotation
- -> Dir
- -> Maybe (Node, Rotation)
-getConn (Rotation graph node r) dir = do
- { let c = conns graph node dir; i = (length c `div` 2) + r
- ; guard $ i >= 0 && i < length c; let (p,n) = c !! i
- ; rot <- getRotation graph n p (rev dir) node
- ; return (p,rot) }
+rotate :: (?vs :: ViewSettings, ?graph :: Graph) =>
+          Rotation -> Int -> Maybe Rotation
+rotate (Rotation n r) dir = let rot = Rotation n (r+dir) in do
+    guard $ any isJust [toPath rot d | d <- [Pos, Neg]]; return rot
 
-rotate
- :: (?vs :: ViewSettings)
- => Rotation
- -> Int
- -> Maybe Rotation
-rotate (Rotation g n r) dir = do
- { let rot = Rotation g n (r+dir)
- ; guard $ any isJust [getConn rot d | d <- [Pos, Neg]]
- ; return rot }
+move :: (?vs :: ViewSettings, ?graph :: Graph) =>
+        Rotation -> Dir -> Maybe Rotation
+move rot dir = do path <- toPath rot dir
+                  return $ fromPath (rev path)
 
-move
- :: (?vs :: ViewSettings)
- => Rotation
- -> Dir
- -> Maybe Rotation
-move rot dir = fmap snd (getConn rot dir)
+getText :: (?graph :: Graph) => Node -> Maybe String
+getText n = listToMaybe $ catMaybes $ map f $ iquery (n, rdfs_label, X) where
+    f (Literal s _) = Just s; f _ = Nothing
+    
+getTextOrIRI :: (?graph :: Graph) => Node -> String
+getTextOrIRI n = fromMaybe (showNode (graphNamespaces ?graph) n) (getText n)
+                    
+setText :: Node -> String -> Endo Graph
+setText n t = update (n, rdfs_label, Literal t Plain)
 
-getText
- :: Graph
- -> Node
- -> Maybe String
-getText g n =
- fmap f $ getOne g n rdfs_label Pos where
- f (PlainLiteral s) = s
- f _ = error "getText argh"
-
-setText
- :: Graph
- -> Node
- -> String
- -> Graph
-setText g n t = update (n, rdfs_label, PlainLiteral t) g
-
-nodeView
- :: Graph
- -> Node
- -> Vob Node
-nodeView g n
- = rectBox
- $ pad 5
- $ useFgColor
- $ multiline False 20 s
- where
- s = maybe (show n) id (getText g n)
-
-propView
- :: Graph
- -> Node
- -> Vob Node
-propView g n
- = (useFadeColor $ fill extents)
- & (pad 5
-   $ useFgColor
-   $ label
-   $ maybe (show n) id (getText g n))
-
-vanishingView
- :: (?vs :: ViewSettings)
- => Int
- -> Int
- -> Color
- -> Color
- -> Color
- -> Color
- -> FenState
- -> Vob Node
-vanishingView
- depth
- maxnodes
- bgColor
- blurBgColor
- focusColor
- blurColor
- (FenState
-  { fsRotation = startRotation
-  , fsMark = mark
-  , fsHasFocus=focus})
- = runVanishing depth maxnodes view where
- -- place the center of the view and all subtrees in both directions
- colorByFocus =
-  case focus of
-   True  -> Just (bgColor, focusColor)
-   False -> Just (blurBgColor, blurColor)
-
- view = do
-  { placeNode
-     colorByFocus
-     startRotation
-  ; let Rotation _ n _ = startRotation
-  ; visitNode n
-  ; forM_ [Pos, Neg] $ \dir -> do
-  ; placeConns startRotation dir True }
- -- place all subtrees in xdir
- placeConns rotation xdir placeFirst
-  = withDepthIncreased 1 $ do
-     { when placeFirst $ placeConn rotation xdir
-     ; forM_ [-1, 1] $ \ydir -> do
-      { placeConns' rotation xdir ydir } }
- -- place rest of the subtrees in (xdir, ydir)
- placeConns' rotation xdir ydir
-  = withDepthIncreased 1
-  $ maybeDo
-     (rotate rotation ydir)
-     $ \rotation' -> do
-       { withAngleChanged
-          (fromIntegral ydir * mul xdir pi / 14) $ do
-           { placeConn rotation' xdir
-           ; placeConns' rotation' xdir ydir } }
- -- place one subtree
- placeConn rotation@(Rotation graph n1 _) dir
-  = withDepthIncreased 1
-  $ maybeDo (getConn rotation dir)
-  $ \(prop, rotation') -> do
-   { let Rotation _ n2 _ = rotation'
-   ; scale' <- getScale
-   ; withCenterMoved dir (280 * (scale'**3)) $ do
-     { ifUnvisited n2 $ placeNode Nothing rotation'
-     ; let (nl,nr) = if dir==Pos then (n1,n2) else (n2,n1)
-     ; addVob
-        $ between
-          (center @@ nl)
-          (center @@ nr)
-        $ ownSize
-        $ centerVob
-        $ scale #scale'
-        $ propView graph prop
-     ; addVob
-        $ useFgColor
-        $ stroke
-        $ line (center @@ nl) (center @@ nr)
-     ; ifUnvisited n2 $ visitNode n2 >> do
-       { placeConns rotation' dir True
-       ; withDepthIncreased 3
-          $ placeConns rotation' (rev dir) False }}}
- -- place one node view
- placeNode cols (Rotation graph node _) = do
-  { scale' <- getScale
-  ; let
-     f vob =
-      case bg of
-       Nothing -> vob
-       Just c  -> setBgColor c vob
-     markColor
-      = if node `Set.member` mark
-         then Just (Color 1 0 0 1)
-         else Nothing
-     bg = combine (fmap snd cols) markColor
-     combine Nothing c = c
-     combine c Nothing = c
-     combine (Just c1) (Just c2) = Just $ interpolate 0.5 c1 c2
-     g vob =
-      case cols of
-       Nothing -> vob
-       Just (c,_) -> frame c & vob
-      where
-       (w,h) = defaultSize vob
-       frame c =
-        withColor #c
-                  $ fill
-                  $   moveTo (point #(0-10) #(0-10))
-                    & lineTo (point #(w+10) #(0-10))
-                    & lineTo (point #(w+10) #(h+10))
-                    & lineTo (point #(0-10) #(h+10))
-                    & lineTo (point #(0-10) #(0-10))
-  ; placeVob
-     $ ownSize
-     $ scale #scale'
-     $ keyVob node
-     $ g
-     $ f
-     $ nodeView graph node}
-
- getScale :: VV Double
- getScale = do
-  { d <- asks vvDepth
-  ; return (0.97 ** fromIntegral d) }
+nodeView :: (?graph :: Graph) => Node -> Vob Node
+nodeView n = useFgColor $ case getTextOrIRI n of
+    'T':'e':'X':':':s -> latex s
+    s                 -> multiline False 20 s
+    
+propView :: (?graph :: Graph) => Node -> Vob Node
+propView n = (useFadeColor $ fill extents)
+           & (pad 5 $ useFgColor $ label $ getTextOrIRI n)
 
 
-data VVState
- = VVState
- { vvDepth :: Int
- , vvMaxDepth :: Int
- , vvMaxNodes :: Int
- , vvX :: Double
- , vvY :: Double
- , vvAngle :: Double }
 
-type StateSetWriter
- = StateT
-    (Set Node)
-    (Writer (Dual (Vob Node)))
+presentationView :: (?vs :: ViewSettings) => View FenState Node
+presentationView state = let ?graph = fsGraph state in result where
+    result :: (?graph :: Graph) => Vob Node
+    result = cursor & vob where
+    Rotation node r0 = fsRotation state
+    children = map rotationNode $
+                   catMaybes [move (Rotation node (r0+i)) Pos | i <- [-12..20]]
+    selected = fmap (getSide Pos) (toPath (fsRotation state) Pos)
+    f sc n = keyVob n $ useFgColor $ pad 5 $ scaleVob sc $
+                 multiline True 70 $ getTextOrIRI n
+    cursor = flip (maybe mempty) selected $ \n -> 
+                 showAtKey n $ keyVob (Literal "CURSOR" Plain) $ rectBox mempty
+    space = changeSize (const (0, 20)) mempty
+    vobs = List.intersperse space $ f 3 node : map (f 2) children
+    index = fromMaybe 0 $ selected >>= \n -> List.elemIndex n children
+    y = sum $ map defaultHeight $ take (2 * index) vobs
+    vob = pad 30 $ translate #0 #(-y) $ vbox $ vobs
 
-type VV a
- = ReaderT
-    VVState
-    (BreadthT StateSetWriter)
-    a
 
-runVanishing
- :: Int
- -> Int
- -> VV ()
- -> Vob Node
-runVanishing maxdepth maxnodes vv
- = comb (0,0) $ \cx ->
-  let (w,h) = rcSize cx in
-    getDual
-  $ execWriter
-  $ flip execStateT Set.empty
-  $ execBreadthT
-  $ runReaderT vv
-  $ VVState 0 maxdepth maxnodes (w/2) (h/2) 0
+tryRotate :: (?vs :: ViewSettings, ?graph :: Graph) =>
+             Rotation -> Int -> Maybe Rotation
+tryRotate rot dir = listToMaybe $ catMaybes 
+    [rotate rot dir' | dir' <- reverse $ map (signum dir *) [1..abs dir]]
 
--- |Execute the passed action with the recursion depth increased by
--- the given amount of steps, if it is still smaller than the maximum
--- recursion depth.
---
-withDepthIncreased
- :: Int
- -> VV ()
- -> VV ()
-withDepthIncreased n m = do
- { state <- ask
- ; let state' = state { vvDepth = vvDepth state + n }
- ; case vvDepth state' >= vvMaxDepth state' of
-    True  -> return ()
-    False ->
-     lift $ scheduleBreadthT $ flip runReaderT state' $ do
-      { visited <- get
-      ; let max = (4 * vvMaxNodes state') `div` 3
-      ; when (Set.size visited <= max) m }}
+tryMove :: (?vs :: ViewSettings, ?graph :: Graph) =>
+           Rotation -> Dir -> Maybe Rotation
+tryMove rot@(Rotation n r) dir = maybe rot' Just (move rot dir) where
+    rot' | r == nearest = Nothing
+         | otherwise    = Just $ Rotation n nearest
+    nearest | r > 0     = len-1 - min (len `div` 2) (maxCenter ?vs)
+            | otherwise = 0 - min (len `div` 2) (maxCenter ?vs)
+    len = (length $ conns n dir)
+    
+findChange :: (?vs :: ViewSettings, ?graph :: Graph) =>
+              Rotation -> Int -> Maybe Rotation
+findChange rot@(Rotation n r) dir = fmap (Rotation n . (r+)) change where
+    change = listToMaybe $ List.sortBy (\x y -> abs x `compare` abs y)
+                  $ catMaybes [findChange' Neg, findChange' Pos]
+    findChange' dir' = fmap (subtract r) r' where
+        len = length $ conns n dir'
+        index = r + min (len `div` 2) (maxCenter ?vs)
+        later = if dir > 0 then           drop (index+1) $ conns n dir'
+                           else reverse $ take  index    $ conns n dir'
+        pathToProp (Path _ [Conn prop _ _]) = prop
+        pathToProp (Path _ _) = error "pathToProp undefined for long paths"
+        currentProperty = fmap pathToProp $ toPath rot dir'
+        (same,next) = span ((== currentProperty) . Just . pathToProp) later
+        r' = listToMaybe $ map (rotationOffs . fromPath) $ reverse same ++ next
 
-visitNode :: Node -> VV ()
-visitNode n = modify (Set.insert n)
+modifyGraph :: Graph -> Path -> Endo FenState
+modifyGraph graph' path' state = 
+    state { fsGraph=graph', fsPath=path', fsGraphModified=True,
+            fsUndo=(fsGraph state, fsPath state):fsUndo state, fsRedo=[]}
 
-ifUnvisited :: Node -> VV () -> VV ()
-ifUnvisited n m = do
- { visited <- get
- ; when (not $ n `Set.member` visited) m }
+newNode :: (?vs :: ViewSettings, ?uriMaker :: URIMaker) => 
+           Dir -> EndoM IO FenState
+newNode dir state@(FenState { fsGraph = graph, fsProperty = prop,
+                              fsPath = Path node _ }) = do
+    node' <- liftM IRI newURI
+    let graph' = insert (triple dir (node, prop, node'))
+               $ insert (node', rdfs_label, Literal "" Plain) graph
+     in return $ modifyGraph graph' (Path node' [Conn prop (rev dir) node]) state
+    
+connect :: (?vs :: ViewSettings) => Dir -> Endo FenState
+connect _ state | Set.null (fsMark state) = state
+connect dir state =
+    let nodes = Set.toList (fsMark state); prop = fsProperty state in
+    let ?graph = foldr (\n -> insert $ triple dir (fsNode state, prop, n))
+                       (fsGraph state) nodes in
+    modifyGraph ?graph (Path (fsNode state) [Conn prop dir (head nodes)]) state
+        { fsMark = Set.empty }
 
-addVob :: Vob Node -> VV ()
-addVob vob = do
- { d <- asks vvDepth; md <- asks vvMaxDepth
- ; mn <- asks vvMaxNodes; visited <- get
- ; let
-    x = (fromIntegral (md - d) / fromIntegral (md+2))
-    vob' =
-     case Set.size visited >= mn of
-      True  -> invisibleVob vob
-      False -> fade x vob
- ; tell (Dual vob') }
+disconnect :: (?vs :: ViewSettings) => Dir -> Endo FenState
+disconnect dir state = let ?graph = fsGraph state in
+    let rot = fsRotation state in
+    case toPath rot dir of
+        Nothing -> state
+        Just path -> 
+            let path' = fromMaybe (Path (fsNode state) []) $
+                        msum [flip toPath xdir =<< rotate rot ydir |
+                              xdir <- [Neg,Pos], ydir <- [-1,1]]
+                triples = pathToTriples path
+                graph' = foldr delete (fsGraph state) triples
+             in modifyGraph graph' path' state
 
-placeVob :: Vob Node -> VV ()
-placeVob vob = do
- { state <- ask
- ; addVob
-    $ translate #(vvX state) #(vvY state) $ centerVob vob }
-
-withCenterMoved :: Dir -> Double -> VV () -> VV ()
-withCenterMoved dir distance = local f where
- distance' = mul dir distance
- f s = s { vvX = vvX s + distance' * cos (vvAngle s)
-         , vvY = vvY s + distance' * sin (vvAngle s) }
-
-withAngleChanged :: Double -> VV () -> VV ()
-withAngleChanged delta
- = local $ \s -> s { vvAngle = vvAngle s + delta }
-
-tryMove
- :: (?vs :: ViewSettings)
- => Rotation
- -> Dir
- -> Maybe Rotation
-tryMove rot@(Rotation g n r) dir = maybe rot' Just (move rot dir) where
- rot' | r == nearest = Nothing
-      | otherwise    = Just $ Rotation g n nearest
- nearest | r > 0     = len-1 - len `div` 2
-         | otherwise = 0 - len `div` 2
- len = (length $ conns g n dir)
-
-type URIMaker = (String, IORef Integer)
-
-newURIMaker :: IO URIMaker
-newURIMaker = do
- { rand <- sequence [randomRIO (0,63) | _ <- [1..27::Int]]
- ; let chars = ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ "+-"
- ; ref <- newIORef 1
- ; return ("urn:urn-5:" ++ map (chars !!) rand, ref) }
-
-newURI :: (?uriMaker :: URIMaker) => IO Node
-newURI = do
- { let (base, ref) = ?uriMaker
- ; i <- readIORef ref; writeIORef ref (i+1)
- ; return $ URI (base ++ ":" ++ show i) }
-
-newNode
- :: (?vs :: ViewSettings, ?uriMaker :: URIMaker)
- => Rotation
- -> Dir
- -> IO Rotation
-newNode (Rotation graph node _) dir = do
- { node' <- newURI
- ; let
-    graph' = insert (triple dir (node, rdfs_seeAlso, node'))
-           $ insert (node', rdfs_label, PlainLiteral "") graph
- ; return $ fromJust
-          $ getRotation
-             graph'
-             node'
-             rdfs_seeAlso
-             (rev dir)
-             node }
-
-connect
- :: (?vs :: ViewSettings)
- => Rotation
- -> Dir
- -> Mark
- -> Rotation
-connect r _ mark | Set.null mark = r
-connect (Rotation graph node _) dir mark =
- let
- nodes = Set.toList mark
- insTrip n = insert
-           $ triple dir (node, rdfs_seeAlso, n)
- graph' = foldr insTrip graph nodes
- in
-   fromJust
- $ getRotation graph' node rdfs_seeAlso dir (head nodes)
-
-disconnect
- :: (?vs :: ViewSettings)
- => Rotation
- -> Dir
- -> Maybe Rotation
-disconnect (Rotation graph node rot) dir =
- let
- c = conns graph node dir
- index = (length c `div` 2) + rot
- (p,n) = c !! index
- graph' = delete (triple dir (node, p, n)) graph
- index' = ((length c - 1) `div` 2) + rot
- rot' =
-  case index' of
-   x | x == -1                     -> rot+1
-     | x == length c - 1 && x /= 0 -> rot-1
-     | otherwise                   -> rot
- in
- case index >= 0 && index < length c of
-  True  -> Just $ Rotation graph' node rot'
-  False -> Nothing
 
 type Mark = Set Node
 
-toggleMark
- :: Node
- -> Mark
- -> Mark
-toggleMark n mark
- | n `Set.member` mark = Set.delete n mark
- | otherwise           = Set.insert n mark
+toggleMark :: Node -> Endo Mark
+toggleMark n mark | n `Set.member` mark = Set.delete n mark
+                  | otherwise           = Set.insert n mark
 
-newGraph
- :: (?uriMaker :: URIMaker)
- => IO Rotation
+newGraph :: (?uriMaker :: URIMaker) => IO (Graph, Path)
 newGraph = do
- { home0 <- newURI
- ; let
-    graph0 = listToGraph list0
-    list0  = [(home0, rdfs_label, PlainLiteral "")]
-    rot0 = (Rotation graph0 home0 0)
- ; return rot0 }
+    home <- liftM IRI newURI; let dftGraph = IRI "dummy:new-graph"
+    let graph = toGraph dftGraph [(home, rdfs_label, Literal "" Plain)]
+    return (graph, Path home [])
+    
+findStartPath :: (?vs :: ViewSettings) => Maybe String -> Graph -> Path
+findStartPath (Just uri) g | defaultGraph g /= IRI uri = let ?graph = g in 
+    toPath' $ Rotation (IRI uri) 0
+findStartPath _ g = let ?graph = g in result where
+    result :: (?graph :: Graph) => Path
+    result = head $ catMaybes $ [startNode,topic,document] where
 
-findStartRotation
- :: (?vs :: ViewSettings)
- => Graph
- -> Rotation
-findStartRotation g
- = head
- $ catMaybes
- $ startNode:topic:triples where
- self = URI "ex:graph" -- ought to be what the empty URI <> is expanded to
+    self = defaultGraph g
 
- startNode = getRot =<< getTriple self ffv_startNode
- topic = getRot =<< getTriple self foaf_primaryTopic
- triples = map getRot $ graphToList g
-
- getTriple s p = fmap (\o -> (s,p,o)) $ getOne g s p Pos
- getRot (s,p,o) = getRotation g o p Neg s
-
- ffv_startNode = URI "http://fenfire.org/rdf-v/2003/05/ff#startNode"
- foaf_primaryTopic = URI "http://xmlns.com/foaf/0.1/primaryTopic"
+    startNode = fmap getRot $ getTriple self ffv_startNode
+    topic = fmap getRot $ getTriple self foaf_primaryTopic
+    document = Just (Path self [])
+    
+    getTriple s p = iquery (s,p,Any) :: Maybe Triple
+    getRot (s,p,o) = Path o [Conn p Neg s]
+    
+    ffv_startNode = IRI "http://fenfire.org/rdf-v/2003/05/ff#startNode"
+    foaf_primaryTopic = IRI "http://xmlns.com/foaf/0.1/primaryTopic"
+    
+containsInfoTriples :: (?vs :: ViewSettings) => Graph -> Graph
+containsInfoTriples g = toGraph d [(s, p, o) | o <- os, o /= s] where
+    s = defaultGraph g
+    p = IRI "ex:containsInformationAbout"
+    d = IRI ("http://fenfire.org/2007/03/contains-info?" ++ iriStr s)
+    triples = fromDefaultGraph g :: [Triple]
+    [subjects, objects] = for [subject, object] $ \f -> map f triples
+    os = Set.toAscList $ foldr Set.delete (Set.fromList subjects) objects
 
 loadGraph :: FilePath -> IO Graph
-loadGraph fileName = do
- --file <- readFile fileName
- --graph <- fromNTriples file >>= return . reverse-}
- { let
-    convert (s,p,o) = (f s, f p, f o)
-    f (Raptor.Uri s) = URI s
-    f (Raptor.Literal s) = PlainLiteral s
-    f (Raptor.Blank s) = URI $ "blank:" ++ s
- ; triples <-     Raptor.filenameToTriples fileName
-              >>= return . map convert
- ;  return $ listToGraph triples }
+loadGraph fileName = 
+    if List.isPrefixOf "http:" fileName
+        then do let document = takeWhile (/='#') fileName -- FIXME redirects!
+                loadGraph' (Raptor.uriToTriples fileName) document
+        else do uri <- Raptor.filenameToURI fileName
+                loadGraph' (Raptor.filenameToTriples fileName) uri
+    where loadGraph' load' baseuri = do
+              (triples, namespaces) <- load' (Just baseuri)
+              return $ raptorToGraph triples namespaces baseuri
 
 saveGraph :: Graph -> FilePath -> IO ()
 saveGraph graph fileName = do
-   --writeFile fileName $ toNTriples $ reverse graph
- { let
-    convert (s,p,o) = (f s, f p, f o)
-    f (URI s) = Raptor.Uri s
-    f (PlainLiteral s) = Raptor.Literal s
-    triples = graphToList graph
- ; Raptor.triplesToFilename (map convert triples) fileName
- ; putStrLn $ "Saved: " ++ fileName }
+    --writeFile fileName $ toNTriples $ reverse graph
+    let (raptorTriples, namespaces) = graphToRaptor graph
+    Raptor.triplesToFilename raptorTriples namespaces fileName
+    putStrLn $ "Saved: " ++ fileName
 
-basicFileDialog = fileChooserDialogNew Nothing Nothing
+newState :: Graph -> Path -> FilePath -> Bool -> FenState
+newState graph path fp focus = 
+    FenState graph path Set.empty fp False focus 0 rdfs_seeAlso ps [] []
+    where ps = Set.insert rdfs_seeAlso $ Set.delete rdfs_label
+                   $ query (Any, X, Any) graph
 
-openFile
- :: (?vs :: ViewSettings)
- => Rotation
- -> FilePath
- -> IO (Rotation,FilePath)
-openFile rot0 fileName0 = do
- { let
-    dialogActions = [(stockCancel, ResponseCancel)
-                    ,(stockOpen, ResponseAccept)]
- ; dialog <- basicFileDialog FileChooserActionOpen dialogActions
- ; when   (fileName0 /= "")
-        $ do { fileChooserSetFilename dialog fileName0 
-             ; return () }
- ; response <- dialogRun dialog
- ; widgetHide dialog
- ; case response of
-    ResponseAccept -> do
-     { Just fileName <- fileChooserGetFilename dialog
-     ; graph <- loadGraph fileName
-     ; return (findStartRotation graph, fileName) }
-    _ -> return (rot0, fileName0) }
+stateReplaceNode :: Node -> Node -> Endo FenState
+stateReplaceNode m n s@(FenState { fsPath = Path node cs }) = FenState {
+    fsGraph = replaceNode m n (fsGraph s),
+    fsPath = Path (f node) (map (\(Conn p d n') -> Conn (f p) d (f n')) cs),
+    fsMark = if m `Set.member` fsMark s
+             then Set.insert n $ Set.delete m $ fsMark s else fsMark s,
+    fsProperty = f (fsProperty s), fsProperties = Set.map f (fsProperties s),
+    fsGraphModified = True,
+    fsFilePath = fsFilePath s, fsHasFocus = fsHasFocus s, fsView = fsView s,
+    fsUndo = (fsGraph s, fsPath s) : fsUndo s, fsRedo = []
+    } where f x = if x == m then n else x
 
-saveFile
- :: Rotation
- -> FilePath
- -> Bool
- -> IO (FilePath,Bool)
-saveFile (Rotation graph _ _) fileName0 confirmSame = do
- { let stockActions = [(stockCancel, ResponseCancel)
-                      ,(stockSave, ResponseAccept)]
- ; dialog <- basicFileDialog FileChooserActionSave stockActions
- ; fileChooserSetDoOverwriteConfirmation dialog True
- ; dialogSetDefaultResponse dialog ResponseAccept
- ; when   (fileName0 /= "")
-        $ do { fileChooserSetFilename dialog fileName0
-             ; return () }
- ; onConfirmOverwrite dialog $ do
-    { Just fileName <- fileChooserGetFilename dialog
-    ; case fileName == fileName0 && not confirmSame of
-       True  -> return FileChooserConfirmationAcceptFilename
-       False -> return FileChooserConfirmationConfirm }
- ; response <- dialogRun dialog
- ; widgetHide dialog
- ; case response of
-    ResponseAccept -> do
-     { Just fileName <- fileChooserGetFilename dialog
-     ; let
-        fileName' = checkSuffix fileName
-     ; saveGraph graph fileName'
-     ; return (fileName', True) }
-    _ -> return (fileName0, False) }
-
-checkSuffix
- :: FilePath
- -> FilePath
-checkSuffix s
- | Data.List.isSuffixOf ".nt" s = s
- | otherwise                    = s ++ ".nt"
-
-confirmSave
- :: (?vs :: ViewSettings, ?pw :: Window, ?uriMaker :: URIMaker)
- => Bool
- -> HandlerAction FenState
- -> HandlerAction FenState
-confirmSave False action = action
-confirmSave True action = do
- { response <- liftIO $ do
-   { dialog <- makeConfirmUnsavedDialog
-   ; response' <- dialogRun dialog
-   ; widgetHide dialog
-   ; return response' }
- ; case response of ResponseClose  -> action
-    ResponseAccept -> do
-     { handleAction "save"
-     ; saved <- get >>= return . not . fsGraphModified
-     ; when (saved) action }
-    _ -> return () }
-
-confirmRevert :: (?vs :: ViewSettings, ?pw :: Window) =>
-               Bool -> HandlerAction FenState ->
-               HandlerAction FenState
-confirmRevert False action = action
-confirmRevert True  action = do
-    response <- liftIO $ do
-        dialog <- makeConfirmRevertDialog
-        response' <- dialogRun dialog
-        widgetHide dialog
-        return response'
-    case response of ResponseClose  -> action
-                     _              -> return ()
-
-newState :: Rotation -> FilePath -> Bool -> FenState
-newState rot fp focus = FenState rot Set.empty fp False focus
-
-handleEvent :: (?vs :: ViewSettings, ?pw :: Window,
-                ?uriMaker :: URIMaker) => Handler Event FenState
-handleEvent (E.Key { E.eventModifier=_mods, E.eventKeyName=key }) = do
-    state <- get; let rot = fsRotation state; fileName = fsFilePath state
-    case key of
-        x | x == "Up"    || x == "i"     -> handleAction "up"
-        x | x == "Down"  || x == "comma" -> handleAction "down"
-        x | x == "Left"  || x == "j"     -> handleAction "left"
-        x | x == "Right" || x == "l"     -> handleAction "right"
-        "O" -> handleAction "open"
-        "S" -> do (fp',saved) <- liftIO $ saveFile rot fileName False
-                  let modified' = fsGraphModified state && not saved
-                  put $ state { fsFilePath = fp', fsGraphModified = modified' }
-        _   -> unhandledEvent
-handleEvent _ = unhandledEvent
-
-handleAction :: (?vs :: ViewSettings, ?pw :: Window,
-                 ?uriMaker :: URIMaker) => Handler String FenState
-handleAction action = do
-    FenState { fsRotation = rot@(Rotation graph node _), fsMark = mark,
-               fsFilePath = filepath, fsGraphModified = modified,
-               fsHasFocus=focus
-             } <- get
-    let m f x = maybeDo (f rot x) putRotation
-        b f x = maybeDo (f rot x) $ \rot' -> do
-                    putRotation rot'
-                    modify $ \s -> s { fsGraphModified = modified }
-        n f x = liftIO (f rot x) >>= putRotation
-        o f x = putState (f rot x mark) Set.empty
-    case action of
-        "up"    -> b rotate (-1)    ; "down"  -> b rotate 1
-        "left"  -> b tryMove Neg    ; "right" -> b tryMove Pos
-        "nodel" -> n newNode Neg    ; "noder" -> n newNode Pos
-        "connl" -> o connect Neg    ; "connr" -> o connect Pos
-        "breakl"-> m disconnect Neg ; "breakr"-> m disconnect Pos
-        "rmlit" -> putState (delLit rot) mark
-        "mark"  -> putMark $ toggleMark node mark
-        "new"   -> confirmSave modified $ do
-            rot' <- liftIO newGraph
-            put $ newState rot' "" focus
-        "open"  -> confirmSave modified $ do
-            (rot',fp') <- liftIO $ openFile rot filepath
-            put $ newState rot' fp' focus
-        "revert" | filepath /= "" -> confirmRevert modified $ do
-            g' <- liftIO $ loadGraph filepath
-            put $ newState (findStartRotation g') filepath focus
-        "save" | filepath /= "" -> do
-                     liftIO $ saveGraph graph filepath
-                     modify $ \s -> s { fsGraphModified = False }
-               | otherwise      -> handleAction "saveas"
-        "saveas"-> do
-            (fp',saved) <- liftIO $ saveFile rot filepath True
-            let modified' = modified && not saved
-            modify $ \s -> s { fsFilePath = fp', fsGraphModified = modified' }
-        "quit"  -> do confirmSave modified $ liftIO mainQuit
-        "about" -> liftIO $ makeAboutDialog >>= widgetShow
-        _       -> unhandledEvent
-  where putRotation rot = do modify $ \state -> state { fsRotation=rot,
-                                                        fsGraphModified=True }
-                             setInterp True
-        putMark mk      = do modify $ \state -> state { fsMark=mk }
-        putState rot mk = do putMark mk; putRotation rot
-        delLit (Rotation g n r) = Rotation (deleteAll n rdfs_label g) n r
-
-makeActions actionGroup accelGroup = do
-    let actionentries =
-            [ ( "new"    , stockNew           )
-            , ( "open"   , stockOpen          )
-            , ( "save"   , stockSave          )
-            , ( "saveas" , stockSaveAs        )
-            , ( "revert" , stockRevertToSaved )
-            , ( "quit"   , stockQuit          )
-            , ( "about"  , stockAbout         )
-            ]
-    flip mapM actionentries $ \(name,stock) -> do
-        item <- stockLookupItem stock -- XXX Gtk2Hs actionNew needs the label
-        action <- actionNew name (siLabel $ fromJust item) Nothing (Just stock)
-        actionGroupAddActionWithAccel actionGroup action Nothing
-        actionSetAccelGroup action accelGroup
-
-updateActionSensitivity actionGroup modified readable = do
-    Just save <- actionGroupGetAction actionGroup "save"
-    actionSetSensitive save modified
-    Just revert <- actionGroupGetAction actionGroup "revert"
-    actionSetSensitive revert (modified && readable)
-
-makeBindings actionGroup bindings = do
-    let bindingentries =
-            [ ("noder"  , Just "_New node to right"         ,
-               stockMediaForward  , Just "n"              )
-            , ("nodel"  , Just "N_ew node to left"          ,
-               stockMediaRewind   , Just "<Shift>N"       )
-            , ("breakr" , Just "_Break connection to right" ,
-               stockGotoLast      , Just "b"              )
-            , ("breakl" , Just "B_reak connection to left"  ,
-               stockGotoFirst     , Just "<Shift>B"       )
-            , ("mark"   , Just "Toggle _mark"               ,
-               stockOk            , Just "m"              )
-            , ("connr"  , Just "_Connect marked to right"   ,
-               stockGoForward     , Just "c"              )
-            , ("connl"  , Just "C_onnect marked to left"    ,
-               stockGoBack        , Just "<Shift>C"       )
-            , ("rmlit"  , Just "Remove _literal text"       ,
-               stockStrikethrough , Just "<Alt>BackSpace" )
-            ]
-    flip mapM bindingentries $ \(name,label',stock,accel) -> do
-        item <- stockLookupItem stock -- XXX Gtk2Hs actionNew needs the label
-        let label'' = maybe (siLabel $ fromJust item) id label'
-        action <- actionNew name label'' Nothing (Just stock)
-        actionGroupAddActionWithAccel actionGroup action accel
-        actionSetAccelGroup action bindings
-
-makeMenus actionGroup root = mapM_ (createMenu root) menuentries
-    where
-        leaf x = Tree.Node x []
-        menuentries = [ Tree.Node "_File" (map leaf ["new","open","",
-                                                     "save","saveas","revert",
-                                                     "",
-                                                     "quit"])
-                      , Tree.Node "_Edit" (map leaf ["noder","nodel","",
-                                                     "breakr","breakl","",
-                                                     "mark","connr","connl","",
-                                                     "rmlit"])
-                      , Tree.Node "_Help" (map leaf ["about"])
-                      ]
-        createMenu :: MenuShellClass menu => menu -> Tree.Tree String -> IO ()
-        createMenu parent (Tree.Node name children) =
-            if children /= [] then do
-                item <- menuItemNewWithMnemonic name
-                menu <- menuNew
-                mapM_ (createMenu menu) children
-                menuItemSetSubmenu item menu
-                menuShellAppend parent item
-            else
-                if name == "" then do
-                    item <- separatorMenuItemNew
-                    menuShellAppend parent item
-                else do
-                    Just action <- actionGroupGetAction actionGroup name
-                    item <- actionCreateMenuItem action
-                    menuShellAppend parent (castToMenuItem item)
-
-makeToolbarItems actionGroup toolbar = do
-    forM_ ["new", "open", "", "save"] $ \name ->
-        if name == "" then do
-            item <- separatorToolItemNew
-            toolbarInsert toolbar item (-1)
-        else do
-            Just action <- actionGroupGetAction actionGroup name
-            item <- actionCreateToolItem action
-            toolbarInsert toolbar (castToToolItem item) (-1)
-
-
-main :: IO ()
-main = do
-
-    uriMaker <- newURIMaker
-
-    let ?vs = ViewSettings { hiddenProps=[rdfs_label] }
-        ?uriMaker = uriMaker in do
-
-    -- initial state:
-
-    args <- initGUI
-
-    let view = vanishingView 20 30
-                   (Color 0.7 0.7 0.8 0.7) (Color 0.7 0.7 0.7 0.7)
-                   (Color 0.93 0.93 1 1)   (Color 0.93 0.93 0.93 1)
-
-    stateRef <- case args of
-        [] -> do
-            rot <- newGraph
-            newIORef $ newState rot "" False
-        xs -> do
-            fileName:fileNames <- mapM canonicalizePath xs
-            g' <- loadGraph fileName
-            gs <- mapM loadGraph fileNames
-            let rot = findStartRotation (foldl mergeGraphs g' gs)
-            newIORef $ newState rot fileName False
-
-    -- start:
-
-    window <- makeWindow view stateRef
-    widgetShowAll window
-
-    mainGUI
-
-makeWindow view stateRef = do
-
-        -- -- main window:
-
-    window <- windowNew
-    let ?pw = window
-
-    rec
-        logo <- getDataFileName "data/logo48.png"
-        Control.Exception.catch (windowSetIconFromFile window logo)
-          (\e -> putStr ("Opening "++logo++" failed: ") >> print (e::Control.Exception.IOException))
-        windowSetTitle window "Fenfire"
-        windowSetDefaultSize window 800 550
-
-        -- textview for editing:
-
-        textView <- textViewNew
-        textViewSetAcceptsTab textView False
-        textViewSetWrapMode textView WrapWordChar
-
-        -- this needs to be called whenever the node or its text changes:
-        let stateChanged (FenState { fsRotation = Rotation g n _r,
-                                 fsGraphModified=modified,
-                                 fsFilePath=filepath }) = do
-            buf <- textBufferNew Nothing
-            textBufferSetText buf (maybe "" id $ getText g n)
-            afterBufferChanged buf $ do
-                start <- textBufferGetStartIter buf
-                end   <- textBufferGetEndIter buf
-                text  <- textBufferGetText buf start end True
-                FenState { fsRotation = (Rotation g' n' r'),
-                           fsFilePath = filepath' }
-                    <- readIORef stateRef
-                let g'' = setText g' n text -- buf corresponds to n, not to n'
-
-                modifyIORef stateRef $ \s ->
-                    s { fsRotation = Rotation g'' n' r', fsGraphModified=True }
-                updateActionSensitivity actionGroup True (filepath' /= "")
-                updateCanvas True
-
-            textViewSetBuffer textView buf
-            updateActionSensitivity actionGroup modified (filepath /= "")
-
-       -- canvas for view:
-
-        (canvas, updateCanvas, canvasAction) <-
-         vobCanvas stateRef view handleEvent handleAction
-                  stateChanged lightGray 0.5
-
-        onFocusIn canvas $ \_event -> do
-         modifyIORef stateRef $ \s -> s { fsHasFocus = True }
-         windowAddAccelGroup window bindings
-         updateCanvas True
-         return True
-        onFocusOut canvas $ \_event -> do
-         modifyIORef stateRef $ \s -> s { fsHasFocus = False }
-         windowRemoveAccelGroup window bindings
-         updateCanvas True
-         return True
-
-        -- action widgets:
-
-        accelGroup <- uiManagerNew >>= uiManagerGetAccelGroup -- XXX Gtk2Hs
-        windowAddAccelGroup window accelGroup
-        -- bindings are active only when the canvas has the focus:
-        bindings <- uiManagerNew >>= uiManagerGetAccelGroup -- XXX Gtk2Hs
-
-        actionGroup <- actionGroupNew "main"
-
-        makeActions actionGroup accelGroup
-        makeBindings actionGroup bindings
-
-        actions <- actionGroupListActions actionGroup
-        forM_ actions $ \action -> do
-         name <- actionGetName action
-         onActionActivate action $ canvasAction name >> return ()
-
-        -- user interface widgets:
-
-        menubar <- menuBarNew
-        makeMenus actionGroup menubar
-
-        toolbar <- toolbarNew
-        makeToolbarItems actionGroup toolbar
-
-        -- layout:
-
-        canvasFrame <- frameNew
-        set canvasFrame [ containerChild := canvas
-                        , frameShadowType := ShadowIn
-                        ]
-
-        textViewFrame <- frameNew
-        set textViewFrame [ containerChild := textView
-                          , frameShadowType := ShadowIn
-                          ]
-
-        paned <- vPanedNew
-        panedAdd1 paned canvasFrame
-        panedAdd2 paned textViewFrame
-
-        vbox <- vBoxNew False 0
-        boxPackStart vbox menubar PackNatural 0
-        boxPackStart vbox toolbar PackNatural 0
-        boxPackStart vbox paned PackGrow 0
-        containerSetFocusChain vbox [toWidget paned]
-
-        set paned [ panedPosition := 380, panedChildResize textViewFrame := False ]
-
-        set window [ containerChild := vbox ]
-
-        -- start:
-
-        readIORef stateRef >>= stateChanged
-
-        widgetGrabFocus canvas
-
-        onDelete window $ \_event -> canvasAction "quit"
-
-    return window
-
-
-makeAboutDialog :: (?pw :: Window) => IO AboutDialog
-makeAboutDialog = do
-    dialog <- aboutDialogNew
-    logoFilename <- getDataFileName "data/logo.svg"
-    pixbuf <- Control.Exception.catch (pixbufNewFromFile logoFilename>>=(\logo'->return $ Right logo'))
-                  (\e -> return $ Left (undefined, show (e::Control.Exception.IOException)))
-    logo <- case pixbuf of
-             Left (_,msg)  -> do
-              putStr ("Opening "++logoFilename++" failed: ")
-              putStrLn msg
-              return Nothing
-             Right pixbuf' -> return . Just =<<
-              pixbufScaleSimple pixbuf'
-              200 (floor (200*(1.40::Double)))
-              InterpHyper
-    set dialog [ aboutDialogName := "Fenfire"
-               , aboutDialogVersion := "alpha version"
-               , aboutDialogCopyright := "Licensed under GNU GPL v2 or later"
-               , aboutDialogComments :=
-                     "An application for notetaking and RDF graph browsing."
-               , aboutDialogLogo := logo
-               , aboutDialogWebsite := "http://fenfire.org"
-               , aboutDialogAuthors := ["Benja Fallenstein", "Tuukka Hastrup"]
-               , windowTransientFor := ?pw
-               ]
-    onResponse dialog $ \_response -> widgetHide dialog
-    return dialog
-
-makeDialog :: (?pw :: Window) => String -> [(String, ResponseId)] ->
-                                 ResponseId -> IO Dialog
-makeDialog title buttons preset = do
-    dialog <- dialogNew
-    set dialog [ windowTitle := title
-               , windowTransientFor := ?pw
-               , windowModal := True
-               , windowDestroyWithParent := True
-               , dialogHasSeparator := False
-               ]
-    mapM_ (uncurry $ dialogAddButton dialog) buttons
-    dialogSetDefaultResponse dialog preset
-    return dialog
-
-makeConfirmUnsavedDialog :: (?pw :: Window) => IO Dialog
-makeConfirmUnsavedDialog = do
-    makeDialog "Confirm unsaved changes"
-        [("Discard changes", ResponseClose),
-         (stockCancel, ResponseCancel),
-         (stockSave, ResponseAccept)]
-        ResponseAccept
-
-makeConfirmRevertDialog :: (?pw :: Window) => IO Dialog
-makeConfirmRevertDialog = do
-    makeDialog "Confirm revert"
-        [(stockCancel, ResponseCancel),
-         (stockRevertToSaved,ResponseClose)]
-        ResponseCancel

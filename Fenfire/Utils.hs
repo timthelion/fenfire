@@ -1,6 +1,7 @@
 -- For (instance MonadReader w m => MonadReader w (MaybeT m)) in GHC 6.6:
+
 {-# LANGUAGE UndecidableInstances,FlexibleInstances, MultiParamTypeClasses  #-}
-module Utils where
+module Fenfire.Utils where
 
 -- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
 -- This file is part of Fenfire.
@@ -28,8 +29,12 @@ import Control.Monad.State
 import Control.Monad.Trans
 import Control.Monad.Writer (WriterT(..), MonadWriter(..), execWriterT)
 
+import Data.Map (Map)
+import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import Data.Monoid (Monoid(..))
+import Data.Set (Set)
+import qualified Data.Set as Set
 
 import qualified System.Time
 
@@ -40,12 +45,57 @@ type Endo a = a -> a
 type EndoM m a = a -> m a
 type Op a      = a -> a -> a
 
+
+type Changer inner outer = Endo inner -> Endo outer
+
+sets :: Changer inner outer -> inner -> Endo outer
+sets chg x = chg (const x)
+
+puts :: MonadState outer m => Changer inner outer -> inner -> m ()
+puts chg x = modify (sets chg x)
+
+modifies :: MonadState outer m => Changer inner outer -> Endo inner -> m ()
+modifies chg f = modify (chg f)
+
+
+type ChangerM m inner outer = EndoM m inner -> EndoM m outer
+                                       
+msets :: MonadState outer m => ChangerM m inner outer -> inner -> EndoM m outer
+msets chg x = chg (const $ return x)
+
+mgets :: MonadState outer m => (outer -> m inner) -> m inner
+mgets f = get >>= f
+
+mputs :: MonadState outer m => ChangerM m inner outer -> inner -> m ()
+mputs chg x = mmodify (msets chg x)
+
+mmodify :: MonadState state m => EndoM m state -> m ()
+mmodify f = get >>= f >>= put
+
+mmodifies :: MonadState outer m =>
+             ChangerM m inner outer -> EndoM m inner -> m ()
+mmodifies chg f = mmodify (chg f)
+
+
+
 type Time     = Double -- seconds since the epoch
 type TimeDiff = Double -- in seconds
 
 
 avg :: Fractional a => Op a
 avg x y = (x+y)/2
+
+
+infixl 9 !?
+
+(!?) :: [a] -> Int -> Maybe a
+l !? i | i < 0         = Nothing
+       | i >= length l = Nothing
+       | otherwise     = Just (l !! i)
+       
+       
+updateWithDefault :: Ord k => a -> (a -> a) -> k -> Map k a -> Map k a
+updateWithDefault x f = Map.alter (Just . f . fromMaybe x)
 
 
 maybeReturn :: MonadPlus m => Maybe a -> m a
@@ -57,6 +107,10 @@ returnEach = msum . map return
 maybeDo :: Monad m => Maybe a -> (a -> m ()) -> m ()
 maybeDo m f = maybe (return ()) f m
 
+toMaybe :: Bool -> a -> Maybe a
+toMaybe False _ = Nothing
+toMaybe True x  = Just x
+
 
 getTime :: IO Time
 getTime = do (System.Time.TOD secs picosecs) <- System.Time.getClockTime
@@ -67,14 +121,19 @@ getTime = do (System.Time.TOD secs picosecs) <- System.Time.getClockTime
 (&) = mappend
 
 
+class Empty a where empty :: a
+instance Empty (Set a)   where empty = Set.empty
+instance Empty (Map k v) where empty = Map.empty
+
+
 funzip :: Functor f => f (a,b) -> (f a, f b)
 funzip x = (fmap fst x, fmap snd x)
 
 ffor :: Functor f => f a -> (a -> b) -> f b
 ffor = flip fmap
 
-forM_ :: Monad m => [a] -> (a -> m b) -> m ()
-forM_ = flip mapM_
+for :: [a] -> (a -> b) -> [b]
+for = flip map
 
 forA2 :: Applicative f => f a -> f b -> (a -> b -> c) -> f c
 forA2 x y f = liftA2 f x y

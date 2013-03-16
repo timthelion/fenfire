@@ -1,6 +1,7 @@
 -- For (instance (Cairo cx r, Monoid m) => Monoid (cx m)):
 {-# LANGUAGE UndecidableInstances , IncoherentInstances, OverlappingInstances, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, GeneralizedNewtypeDeriving #-}
-module Cairo where
+
+module Fenfire.Cairo where
 
 -- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
 -- This file is part of Fenfire.
@@ -20,12 +21,13 @@ module Cairo where
 -- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
 -- MA  02111-1307  USA
 
-import Utils
+import Fenfire.Utils
 
 import Control.Applicative
 import Control.Monad
 
 import Data.Monoid (Monoid(mappend, mempty))
+import qualified Data.Word
 
 import Graphics.UI.Gtk hiding (Point, Size, Layout, Color, get)
 import qualified Graphics.Rendering.Cairo as C
@@ -33,7 +35,9 @@ import Graphics.Rendering.Cairo.Matrix (Matrix(Matrix))
 import qualified Graphics.Rendering.Cairo.Matrix as Matrix
 import Graphics.UI.Gtk.Cairo
 
-data Color = Color Double Double Double Double
+import qualified Graphics.UI.Gtk as Gtk
+
+data Color = Color Double Double Double Double deriving Show
 type Size  = (Double, Double)
 type Point = (Double, Double)
 type Rect  = (Matrix, Size)
@@ -101,8 +105,12 @@ paint = cxRender $ pure C.paint
 clip :: Cairo cx r => cx Path -> Endo r
 clip p = cxWrap $ \ren -> ffor p $ \p' -> do
     C.save; renderPath p'; C.clip; ren; C.restore
-    
-    
+
+withSurface :: Cairo cx r => cx C.Surface -> Endo r    
+withSurface s = cxWrap $ \ren -> #(C.save >> C.getMatrix >>= \m' -> 
+    C.setMatrix !cxMatrix >> C.setSourceSurface !s 0 0 >> C.setMatrix m' >>
+    ren >> C.restore)
+
 withColor :: Cairo cx r => cx Color -> Endo r
 withColor c = cxWrap $ \ren -> ffor c $ \(Color r g b a) -> do
     C.save; C.setSourceRGBA r g b a; ren; C.restore
@@ -188,4 +196,9 @@ line p1 p2 = moveTo p1 & lineTo p2
 
 extents :: (Cairo cx r, Monoid (cx Path)) => cx Path
 extents = moveTo (anchor #0 #0) & lineTo (anchor #0 #1) & lineTo (anchor #1 #1)
-        & lineTo (anchor #1 #0) & lineTo (anchor #0 #0)
+        & lineTo (anchor #1 #0) & closePath
+
+
+fromGtkColor :: Gtk.Color -> Color
+fromGtkColor (Gtk.Color r g b) = Color (f r) (f g) (f b) 1 where
+    f x = fromIntegral x / fromIntegral (maxBound :: Data.Word.Word16)

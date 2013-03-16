@@ -1,12 +1,14 @@
 ===================
-Fenfire version 0.1
+Fenfire version 0.2
 ===================
 
+http://fenfire.org/
 
 Introduction
 ============
 
-Fenfire is a graph-based notetaking system. (We're planning to add a
+Fenfire is a graph-based notetaking system built on Semantic Web technologies 
+and including features for Linked Data browsing. (We're planning to add a
 kitchen sink soon.) It is developed on the channel #fenfire on the
 Freenode IRC network.
 
@@ -24,15 +26,16 @@ Dependencies with known-to-work version numbers:
 
   ghc    6.6    (The Glorious Glasgow Haskell Compilation System)
   gtk2hs 0.9.11 (A GUI library for Haskell based on Gtk, release candidate ok)
-  raptor 1.4.9  (Raptor RDF Parser Toolkit)
+  raptor 1.4.14 (Raptor RDF Parser Toolkit)
   c2hs   0.14.5 (C->Haskell, An Interface Generator for Haskell)
   harp   0.2    (Haskell Regular Patterns, in haskell-src-exts)
   haxml  1.13.2 (Haskell and XML)
   happy  1.15   (The Parser Generator for Haskell)
   alex   2.0.1  (A lexical analyser generator for Haskell)
+  HList  0.1    (Heterogeneous collections for Haskell)
 
-(Packages in Debian: ghc6 libghc6-gtk-dev libraptor1-dev c2hs libghc6-harp-dev 
- libghc6-haxml-dev happy alex)
+(Debian packages: ghc6 libghc6-gtk-dev libraptor1-dev c2hs libghc6-harp-dev 
+ libghc6-haxml-dev happy alex libghc6-network-dev libghc6-hlist-dev)
 
 
 Running a precompiled binary only requires:
@@ -57,10 +60,14 @@ After this, you can start the application like this:
 
 ~/bin/fenfire
 
+
+Editing
+=======
+
 You will see the application launch with a new graph where you can
 start adding your notes using the Edit menu and the included key bindings.
 
-* The current node is highlighted in blue.
+* The current node is highlighted in color.
 
 * To write into the current node, move to the text box at the bottom
   of the window using Tab or the mouse. After you've finished typing,
@@ -78,4 +85,40 @@ start adding your notes using the Edit menu and the included key bindings.
   - Up and Down scroll through the nodes connected to the current node.
   - Instead of Left/Right/Up/Down, you can also use j/l/i/comma.
 
+* To use a node as a connection between others, you can add it as a property
+  and choose it for use for new connections.
+
 You cannot currently use the mouse to move around the structure.
+
+
+Node URIs
+=========
+
+Following the Semantic Web and RDF, each node and connection has a URI (more
+accurately an IRI as international characters are supported). Normally, 
+Fenfire generates random-looking URIs of the URN-5 type, and hides them
+by displaying the node label instead.
+
+* You can reveal the underlying URI by applying the menu item 
+  "Edit -> Remove literal text".
+
+* You can change the underlying URI with "Edit -> Change node's IRI".
+
+  - Full URIs are written in angle brackets: <http://fenfire.org/>
+
+  - URIs under namespaces such as rdfs can be shortened: rdfs:seeAlso
+
+We don't currently provide means to declaring namespaces in addition to those
+that are in a document when it's opened.
+
+
+Linked Data browsing
+====================
+
+* Start by choosing the menu item "File -> Go to IRI" and enter in angle 
+  brackets a http URI of a resource available in RDF.
+
+* Use "File -> Load node's IRI" to follow links between documents, that is,
+  load more data from the URI of the current node.
+
+Data loaded from other documents is not saved.

@@ -1,0 +1,164 @@
+{-# LANGUAGE ImplicitParams #-}
+module Fenfire.VanishingView where
+
+-- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
+-- This file is part of Fenfire.
+-- 
+-- Fenfire is free software; you can redistribute it and/or modify it under
+-- the terms of the GNU General Public License as published by
+-- the Free Software Foundation; either version 2 of the License, or
+-- (at your option) any later version.
+-- 
+-- Fenfire is distributed in the hope that it will be useful, but WITHOUT
+-- ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+-- or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+-- Public License for more details.
+-- 
+-- You should have received a copy of the GNU General
+-- Public License along with Fenfire; if not, write to the Free
+-- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+-- MA  02111-1307  USA
+
+import Fenfire.Utils
+import Fenfire.Cairo hiding (Path, rotate)
+import Fenfire.Vobs
+import Fenfire.RDF
+import Fenfire
+
+import Control.Monad
+import Control.Monad.Reader
+import Control.Monad.State
+import Control.Monad.Writer
+
+import Data.Monoid
+import Data.Set (Set)
+import qualified Data.Set as Set
+
+vanishingView :: (?vs :: ViewSettings) => Int -> Int -> Color -> Color -> 
+                                          Color -> Color -> 
+                                          Color -> Color -> FenState -> Vob Node
+vanishingView depth maxnodes bgColor blurBgColor focusColor blurColor 
+              textColor blurTextColor
+              state@(FenState {fsGraph=graph, fsPath=path, fsMark=mark,
+                               fsHasFocus=focus}) =
+    let ?graph = graph in result where
+    startRotation :: (?graph :: Graph) => Rotation
+    startRotation = fsRotation state
+    result :: (?graph :: Graph) => Vob Node
+    result = runVanishing depth maxnodes view where
+    -- place the center of the view and all subtrees in both directions
+    view = do placeNode (if focus then Just (bgColor, focusColor, textColor) 
+                             else Just (blurBgColor, blurColor, blurTextColor))
+                  startRotation
+              let Rotation n _ = startRotation in visitNode n
+              forM_ [Pos, Neg] $ \dir -> do
+                  placeConns startRotation dir True
+    -- place all subtrees in xdir
+    placeConns rotation xdir placeFirst = withDepthIncreased 1 $ do
+        when placeFirst $ placeConn rotation xdir
+        forM_ [-1, 1] $ \ydir -> do
+            placeConns' rotation xdir ydir
+    -- place rest of the subtrees in (xdir, ydir)
+    placeConns' rotation xdir ydir = withDepthIncreased 1 $
+        maybeDo (rotate rotation ydir) $ \rotation' -> do
+            withAngleChanged (fromIntegral ydir * mul xdir pi / 14) $ do
+                placeConn rotation' xdir
+                placeConns' rotation' xdir ydir
+    -- place one subtree
+    placeConn rotation@(Rotation n1 _) dir = withDepthIncreased 1 $
+        maybeDo (toPath rotation dir) $ \path'@(Path _ [Conn prop _ n2]) -> do
+            let rotation' = fromPath (rev path')
+            scale' <- getScale
+            withCenterMoved dir (280 * (scale'**3)) $ do
+                ifUnvisited n2 $ placeNode Nothing rotation'
+                let (nl,nr) = if dir==Pos then (n1,n2) else (n2,n1)
+                addVob $ between (center @@ nl) (center @@ nr) $ ownSize $
+                    centerVob $ scale #scale' $ propView prop
+                addVob $ useFgColor $ stroke $
+                    line (center @@ nl) (center @@ nr)
+                ifUnvisited n2 $ visitNode n2 >> do
+                    placeConns rotation' dir True
+                    withDepthIncreased 3 $
+                        placeConns rotation' (rev dir) False
+    -- place one node view
+    placeNode cols (Rotation node _) = do
+        scale' <- getScale
+        let f vob = case bg of Nothing -> vob
+                               Just c  -> setFgColor fg $ 
+                                          setBgColor c vob
+            markColor = if node `Set.member` mark then Just (Color 1 0 0 1)
+                            else Nothing
+            bg = combine (fmap (\(_,b,_) -> b) cols) markColor
+            fg = maybe (Color 0 0 0 1) (\(_,_,c) -> c) cols
+            combine Nothing c = c
+            combine c Nothing = c
+            combine (Just c1) (Just c2) = Just $ interpolate 0.5 c1 c2
+            g vob = case cols of Nothing    -> vob
+                                 Just (a,_,_) -> frame a & vob
+                where (w,h) = defaultSize vob
+                      frame c = withColor #c $ fill $ 
+                                    moveTo (point #(0-10) #(0-10)) &
+                                    lineTo (point #(w+10) #(0-10)) &
+                                    lineTo (point #(w+10) #(h+10)) &
+                                    lineTo (point #(0-10) #(h+10)) &
+                                    closePath
+        placeVob $ ownSize $ scale #scale' $ keyVob node $ g $ 
+            f (useBgColor (fill extents) & pad 5 (nodeView node)) &
+            useFgColor (stroke extents)
+        
+    getScale :: VV Double
+    getScale = do d <- asks vvDepth; return (0.97 ** fromIntegral d)
+    
+    
+data VVState = VVState { vvDepth :: Int, vvMaxDepth :: Int, vvMaxNodes :: Int,
+                         vvX :: Double, vvY :: Double, vvAngle :: Double }
+                         
+type VV a = ReaderT VVState (BreadthT (StateT (Set Node) 
+                                          (Writer (Dual (Vob Node))))) a
+
+runVanishing :: Int -> Int -> VV () -> Vob Node
+runVanishing maxdepth maxnodes vv = comb (0,0) $ \cx -> 
+    let (w,h) = rcSize cx 
+    in getDual $ execWriter $ flip execStateT Set.empty $ execBreadthT $
+           runReaderT vv $ VVState 0 maxdepth maxnodes (w/2) (h/2) 0
+    
+-- |Execute the passed action with the recursion depth increased by
+-- the given amount of steps, if it is still smaller than the maximum
+-- recursion depth.
+--
+withDepthIncreased :: Int -> VV () -> VV ()
+withDepthIncreased n m = do
+    state <- ask; let state' = state { vvDepth = vvDepth state + n }
+    if vvDepth state' >= vvMaxDepth state' then return () else
+        lift $ scheduleBreadthT $ flip runReaderT state' $ do
+            visited <- get
+            when (Set.size visited <= (4 * vvMaxNodes state') `div` 3) m
+        
+visitNode :: Node -> VV ()
+visitNode n = modify (Set.insert n)
+
+ifUnvisited :: Node -> VV () -> VV ()
+ifUnvisited n m = do visited <- get
+                     when (not $ n `Set.member` visited) m
+
+addVob :: Vob Node -> VV ()
+addVob vob = do d <- asks vvDepth; md <- asks vvMaxDepth
+                mn <- asks vvMaxNodes; visited <- get
+                let x = (fromIntegral (md - d) / fromIntegral (md+2))
+                    vob' = if Set.size visited >= mn then invisibleVob vob
+                                                     else fade x vob
+                tell (Dual vob')
+
+placeVob :: Vob Node -> VV ()
+placeVob vob = do
+    state <- ask
+    addVob $ translate #(vvX state) #(vvY state) $ centerVob vob
+        
+withCenterMoved :: Dir -> Double -> VV () -> VV ()
+withCenterMoved dir distance = local f where
+    distance' = mul dir distance
+    f s = s { vvX = vvX s + distance' * cos (vvAngle s),
+              vvY = vvY s + distance' * sin (vvAngle s) }
+                   
+withAngleChanged :: Double -> VV () -> VV ()
+withAngleChanged delta = local $ \s -> s { vvAngle = vvAngle s + delta }

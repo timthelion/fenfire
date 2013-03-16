@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -fth #-} 
+{-# LANGUAGE TemplateHaskell #-}
 module FunctorSugar where
 
 import Control.Applicative
@@ -9,7 +9,7 @@ import Language.Haskell.TH
 import System.IO.Unsafe
 
 functorCall :: Functor f => f a -> a
-functorCall x = error "Eeene meene miste es rappelt in der kiste"
+functorCall _x = error "Some functor sugar was not translated!"
 
 fzip :: Applicative f => f a -> f b -> f (a,b)
 fzip a b = pure (\x y -> (x,y)) <*> a <*> b
@@ -18,10 +18,10 @@ fcurry :: Applicative f => (f (a,b) -> c) -> f a -> f b -> c
 fcurry f x y = f (fzip x y)
 
 functorSugar :: ExpQ -> ExpQ
-functorSugar expQ = do exp <- expQ
-                       (exp', calls) <- runWriterT (traverse exp)
+functorSugar expQ = do exp' <- expQ
+                       (exp'', calls) <- runWriterT (traverse exp')
                        appsE ([mkFMap $ length calls,
-                               lamE (map (varP . fst) calls) $ return exp']
+                               lamE (map (varP . fst) calls) $ return exp'']
                             ++ map (return . snd) calls) 
 
 mkFMap :: Int -> ExpQ
@@ -31,7 +31,7 @@ mkFMap n = [| \f -> $(repeatFn (n-1) [| fcurry |])
                         (fmap ($(repeatFn (n-1) [| uncurry |]) f)) |]
     where repeatFn :: Int -> ExpQ -> ExpQ
           repeatFn 1 e = e
-          repeatFn n e = [| $e . $(repeatFn (n-1) e) |]
+          repeatFn n' e = [| $e . $(repeatFn (n'-1) e) |]
 
 callExpr :: Exp
 callExpr = unsafePerformIO $ runQ [| FunctorSugar.functorCall |]
@@ -54,14 +54,14 @@ traverse e = case e of
                           er' <- maybe (return Nothing) 
                                        (liftM Just . traverse) er
                           return (InfixE el' ei' er')
-    LamE pats e -> liftM (LamE pats) (traverse e)
+    LamE pats e' -> liftM (LamE pats) (traverse e')
     TupE exps -> liftM TupE (mapM traverse exps)
-    LetE decls e -> liftM2 LetE (mapM traverseDec decls) (traverse e)
+    LetE decls e' -> liftM2 LetE (mapM traverseDec decls) (traverse e')
     ListE exps -> liftM ListE (mapM traverse exps)
-    SigE e type' -> liftM (flip SigE type') (traverse e)
+    SigE e' type' -> liftM (flip SigE type') (traverse e')
     DoE stmts -> liftM DoE (mapM traverseStmt stmts)
     CompE stmts -> liftM CompE (mapM traverseStmt stmts)
-    e -> error ("expression type not implemented yet: " ++ show e)
+    _ -> error ("expression type not implemented yet: " ++ show e)
     
 traverseDec :: Traverse Dec
 traverseDec decl = case decl of
@@ -83,9 +83,9 @@ traverseBody (GuardedB bs) = liftM GuardedB $ forM bs $ \(g,e) ->
     
 traverseStmt :: Traverse Stmt
 traverseStmt stmt = case stmt of
-    BindS pat exp -> liftM (BindS pat) (traverse exp)
+    BindS pat exp' -> liftM (BindS pat) (traverse exp')
     LetS decs -> liftM LetS (mapM traverseDec decs)
-    NoBindS exp -> liftM NoBindS (traverse exp)
+    NoBindS exp' -> liftM NoBindS (traverse exp')
     ParS stmts -> liftM ParS (mapM (mapM traverseStmt) stmts)
 
 {-

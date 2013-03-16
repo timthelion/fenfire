@@ -1,6 +1,24 @@
 -- HaRP pattern translator produces following warnings:
 {-# OPTIONS_GHC -fno-warn-name-shadowing -fno-warn-incomplete-patterns #-}
-module Darcs2RDF where
+module Fenfire.Darcs2RDF where
+
+-- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
+-- This file is part of Fenfire.
+-- 
+-- Fenfire is free software; you can redistribute it and/or modify it under
+-- the terms of the GNU General Public License as published by
+-- the Free Software Foundation; either version 2 of the License, or
+-- (at your option) any later version.
+-- 
+-- Fenfire is distributed in the hope that it will be useful, but WITHOUT
+-- ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+-- or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+-- Public License for more details.
+-- 
+-- You should have received a copy of the GNU General
+-- Public License along with Fenfire; if not, write to the Free
+-- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+-- MA  02111-1307  USA
 
 import Prelude hiding (elem)
 import Text.XML.HaXml hiding (attr)
@@ -28,7 +46,7 @@ triples repo (Patch hash name date author) =
     (if not $ null authorName
         then authorURI++" <foaf:name> "++show authorName ++ ".\n" else "") ++    
     authorURI++" <foaf:mbox> <mailto:"++authorMail ++ ">.\n" ++
-    uri++ " <dc:date> \""++date'++ "\"^^<xsd:dateTime>.\n"    
+    uri++ " <"++dc_date++"> \""++date'++ "\"^^<xsd:dateTime>.\n"    
     where uri = "<darcs:"++hash++">"
           -- the following uses HaRP patterns
           [/ (/ authorName*, ' '*, '<', authorMail*, '>' /)
@@ -40,6 +58,7 @@ triples repo (Patch hash name date author) =
           day = "ex:patches:" ++ take 10 date' ++ ":" ++ repo
           seeAlso = "http://www.w3.org/2000/01/rdf-schema#seeAlso"
           label = "http://www.w3.org/2000/01/rdf-schema#label"
+          dc_date = "http://purl.org/dc/elements/1.1/date"
 
 elems :: [Content] -> [Element]
 elems (CElem e : cs) = e : elems cs
@@ -76,4 +95,5 @@ text [] = ""
 
 main = do [repo] <- getArgs
           xml <- getContents
+          putStr "@prefix dc: <http://purl.org/dc/elements/1.1/>.\n"
           putStr $ concatMap (triples repo) $ patches $ xmlParse "stdin" xml

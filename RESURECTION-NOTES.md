@@ -459,3 +459,107 @@ I also I noticed that it wasn't saving things and restoring them correctly
 Tuukka Hastrup, one of the old authors mentioned to me, that the [RDF stuff](http://www.w3.org/TR/rdf-mt/) might not be up to par.  I didn't like the fact that we were using raptor1 in the first place for RDF support.  It makes no sense for Haskell, which is good at data manipulation, to be handing C, which isn't so great at data manipulation, a data manipulation task.  At least, when there is no real performance barrier to usign Haskell.
 
 Since fenfire was written, Haskell has gotten [it's own RDF support](http://hackage.haskell.org/package/rdf4h-1.1.0)  So I decided to try migrating to using that instead.
+
+Fenfire 0.2
+====================
+
+After finishing my port of fenfire 0.1 to a current day ghc, I emailed the authors to ask if I could upload my results to hackage.  Both of them were kind enough to reply(and give me permission).  However Benja Fallenstein replied:
+
+
+    cool!
+
+    I've noticed that the version number on Hackage says 0.1 -- are you
+    aware of the 0.2 version at http://fenfire.org?
+
+I had ported version 0.1.  I guess I have more work to do...
+
+I had several methods at my disposal, however, to speed up my progress the second time around...  Mainly, looking at my resurection notes, and diffing between the unresurected 0.1, the resurected 0.1, and the unresurected 0.2. If a file from the unresurected 0.2 was the same as in the unresurected 0.1, I could use the 0.1 resurected version verbatum in my resurection of 0.2.
+
+This allowed me to keep my changes to the preprocessor in tact without any extra work.
+
+Other notes about the upgrade to 0.2
+-------------------------------
+`copyCStringLen` no longer exists, seems `packCStringLen` takes it's place.
+
+I got a bit worried when I saw that `Data.Generics does not expose :*:` but then I realised it's only use was in a `hiding`clause ;).  However when I got rid of that error, I realised that I had just opened myself up for something worse.  No more type operators allowed in the new GHC... Time for an extension:
+
+    {-# LANGUAGE TypeOperators #-}
+
+Didn't change a thing, no new error message, nothing.  I tried 
+
+    {-# LANGUAGE TypeOperators111 #-}
+
+Also no change.  No new error message either!  It seems ghc isn't very helpfull in telling you if a pragma exists or not :/
+
+Another problem I had was with understanding the syntax of the lines:
+
+   iquery :: (?graph :: Graph, Pattern pat r) => pat -> r
+   iquery pat = query pat ?graph
+
+   imquery :: (?graph :: Graph, Pattern pat (Either String r), Monad m) => pat -> m r
+   imquery pat = mquery pat ?graph
+
+   iquery' :: (?graph :: Graph, Pattern pat (Either String r)) => pat -> r
+   iquery' pat = query' pat ?graph
+
+What's this `?graph` stuff all about?  I learned on IRC, that it is an implicit parameter and I needed ImplicitParams.
+
+I strugled with both these new pragas for a while, untill I realised that they were being ignored because they didn't come at the very top of the file.  In order for a LANGUAGE pragma not to be ignored it must come before the `module Fenfire.RDF where` line
+
+
+Another burner was:
+
+    Resolving dependencies...
+    Configuring fenfire-0.2...
+    Building fenfire-0.2...
+    Preprocessing library fenfire-0.2...
+    In-place registering fenfire-0.2...
+    Preprocessing executable 'fenfire' for fenfire-0.2...
+    cabal: can't find source for Fenfire in ., dist/build/autogen
+    Failed to install fenfire-0.2
+
+Definitely a problem with the preprocessor or, more to the point `Setup.hs`
+
+Of course the `Setup.hs` we used was the same as the one we used before.  I finally noticed, that it was supposed to ouput `processing Somefile.fhs to Somefile.hs` and no such ouput was appearing upon running `cabal install` (even after I realised that to get such output I needed to add the flag `-v3`.)  It seemed that the preprocessor simply wasn't getting run.  After banging my head against the wall a few times I looked back at the `fenfire.cabal` file I had put together for the 0.1 restoration.  The problem, was, indeed completely obvious: I had written `build-type: Simple` when I needed to use `build-type: Custom`.  Argh, sigh.
+
+
+I spent a lot of time in `Main.hs` commenting out things no longer supported by gtk2hs.
+
+And then finally I got to the iceing on the cake:
+
+
+    Preprocessing executable 'fenfire' for fenfire-0.2...
+
+    Fenfire/Main.hs:29:8:
+     Could not find module `Fenfire'
+     It is a member of the hidden package `fenfire-0.2'.
+     Perhaps you need to add `fenfire' to the build-depends in your .cabal file.
+     Use -v to see a list of the files searched for.
+    Failed to install fenfire-0.2
+
+
+Cabal cannot build a library/application in one go. So they chose this error message for that case.
+
+This time it didn't run when I finally got it to compile. Insead, I got:
+
+    fenfire: user error (Pattern match failure in do expression at Fenfire/Main.hs:424:17-27)
+
+The line of code in question is:
+
+     Just action <- actionGroupGetAction actionGroup name
+
+I changed this to:
+     actionM <- actionGroupGetAction actionGroup name
+     action <- case actionM of
+      Just action' -> return action'
+      Nothing -> error $ "Action: " ++ name ++ " does not exist."
+
+And now we have a new error:
+
+    fenfire: Action: new does not exist.
+
+It turns out this error is directly related to something I commented out earlier.
+
+Finally after some more commmenting and uncommenting:
+
+![Screen shot of fenfire 0.2 running ghc 7.4.2](screenshots/fenfire-0.2-ghc-7.4.2.png)

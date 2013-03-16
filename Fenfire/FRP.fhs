@@ -1,0 +1,93 @@
+{-# OPTIONS_GHC -fallow-undecidable-instances -fallow-incoherent-instances #-}
+module Fenfire.FRP where
+
+-- Copyright (c) 2006-2007, Benja Fallenstein, Tuukka Hastrup
+-- This file is part of Fenfire.
+-- 
+-- Fenfire is free software; you can redistribute it and/or modify it under
+-- the terms of the GNU General Public License as published by
+-- the Free Software Foundation; either version 2 of the License, or
+-- (at your option) any later version.
+-- 
+-- Fenfire is distributed in the hope that it will be useful, but WITHOUT
+-- ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+-- or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
+-- Public License for more details.
+-- 
+-- You should have received a copy of the GNU General
+-- Public License along with Fenfire; if not, write to the Free
+-- Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+-- MA  02111-1307  USA
+
+import Fenfire.Utils
+
+import Control.Applicative
+
+import Data.IORef
+
+import Graphics.Rendering.Cairo
+import Graphics.UI.Gtk
+
+newtype SF i o = SF { runSF :: TimeDiff -> i -> (o, SF i o) }
+
+instance Functor (SF i) where
+    fmap f sf = SF $ \t i -> let (o, sf') = runSF sf t i in (f o, fmap f sf')
+    
+instance Applicative (SF i) where
+    pure x  = SF $ \_ _ -> (x, pure x)
+    f <*> a = SF $ \t i -> let (fv, f') = runSF f t i
+                               (av, a') = runSF a t i in (fv av, f' <*> a')
+                               
+input :: SF i i
+input = SF $ \_ i -> (i, input)
+
+data Input = Input { mouseX :: Double, mouseY :: Double }
+
+timeSF :: SF a Double
+timeSF = f 0 where
+    f x = SF $ \t _ -> (x + t, f $ x + t)
+
+test :: SF Input (Render ())
+test = liftA2 (\i t -> do 
+    save; setSourceRGBA 0 0 0 1
+    arc (mouseX i) (mouseY i) 50 (3*t) (3*t+2); stroke; restore) input timeSF
+    
+    
+main = do
+    initGUI
+    window <- windowNew
+    windowSetTitle window "FRP test"
+    windowSetDefaultSize window 700 400
+
+    canvas <- drawingAreaNew
+    set window [ containerChild := canvas ]
+    
+    time0 <- getTime
+    ref <- newIORef (time0, test)
+    mouse <- newIORef (100, 100)
+    
+    onExpose canvas $ \(Expose {}) -> do
+        time' <- getTime
+        (x,y) <- readIORef mouse
+    
+        (time, sf) <- readIORef ref
+        let (ren, sf') = runSF sf (time' - time) (Input x y)
+        writeIORef ref (time', sf')
+
+        drawable <- widgetGetDrawWindow canvas
+        renderWithDrawable drawable ren
+        
+        widgetQueueDraw canvas
+        return True
+        
+    onMotionNotify canvas False $ \e -> case e of
+        Motion { eventX=x, eventY=y } -> writeIORef mouse (x,y) >> return False
+        _                             -> return False
+
+    onEnterNotify canvas $ \e -> case e of
+        Crossing {eventX=x, eventY=y} -> writeIORef mouse (x,y) >> return False
+        _                             -> return False
+        
+    onDestroy window mainQuit
+    widgetShowAll window
+    mainGUI
