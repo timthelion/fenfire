@@ -1,0 +1,14 @@
+# See e.g. http://hydra.geht.net/tino/english/faq/debian/apt/sourceslist/
+
+# Removed httpredir since local proxy was unreachable
+#deb http://httpredir.debian.org/debian wheezy main
+#deb http://httpredir.debian.org/debian wheezy-updates main
+#deb http://security.debian.org wheezy/updates main
+
+deb http://ftp.debian.org/debian wheezy main
+deb http://ftp.debian.org/debian wheezy-updates main
+deb http://security.debian.org wheezy/updates main
+
+# Added backports
+deb http://ftp.debian.org/debian wheezy-backports main
+
