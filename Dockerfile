@@ -21,7 +21,7 @@ RUN apt-get install -qqy \
 
 # libghc-hlist-dev
 RUN apt-get install -qqy cabal-install
-RUN cabal update && cabal install HList random
+RUN cabal update && cabal install HList random --global
 
 
 # Get fenfire
@@ -30,7 +30,7 @@ RUN git clone https://github.com/timthelion/fenfire.git /opt/fenfire
 
 
 # Config, build and install
-RUN cd /opt/fenfire && runhaskell Setup.hs configure --user --prefix ~
+RUN cd /opt/fenfire && runhaskell Setup.hs configure --global
 RUN cd /opt/fenfire && runhaskell Setup.hs build
 RUN cd /opt/fenfire && runhaskell Setup.hs install
 

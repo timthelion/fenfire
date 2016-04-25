@@ -1,0 +1,12 @@
+{
+ "executable": "/usr/local/bin/fenfire",
+ "basic-common-permissions": true,
+ "access-working-directory": true,
+ "description": "Fenfire, experimental graph editor",
+ "gui": {
+  "clipboard": true,
+  "system-tray": false,
+  "cursors": false
+ },
+ "maintainer": "Timothy Hobbs <timothyhobbs@seznam.cz>"
+}

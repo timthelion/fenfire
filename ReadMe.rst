@@ -36,3 +36,23 @@ Fenfire
 
 .. [#] http://savannah.gnu.org/cgi-bin/viewcvs/fenfire/
 
+- 2016 `subuserization <http://subuser.org>`_
+
+1. Install and run::
+
+    $ subuser subuser add fenfire fenfire@https://github.com/timthelion/fenfire.git
+    $ subuser run fenfire
+
+2. Develop::
+
+    $ git clone https://github.com/timthelion/fenfire.git
+    $ cd fenfire
+    $ subuser dev fenfire
+    $ cabal configure --user
+    
+You can now open up another terminal and edit the source code. When you want to build, go back to the ``dev`` terminal and type::
+
+    $ cabal build ; cabal install
+    $ ~/.cabal/bin/fenfire
+
+To build and run.

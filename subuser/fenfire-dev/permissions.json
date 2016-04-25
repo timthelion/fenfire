@@ -1,0 +1,12 @@
+{
+ "gui": {
+  "clipboard": true,
+  "system-tray": false,
+  "cursors": false
+ },
+ "basic-common-permissions": true,
+ "access-working-directory": true,
+ "maintainer": "Timothy Hobbs <timothyhobbs@seznam.cz>",
+ "description": "Fenfire dev image",
+ "executable": "/bin/bash"
+}

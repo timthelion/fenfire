@@ -1,0 +1,10 @@
+{
+ "explicit-image-sources": {
+  "fenfire": {
+   "image-file": "./Dockerfile",
+   "build-context": "./",
+   "permissions-file": "./subuser/fenfire/permissions.json"
+  }
+ },
+ "image-sources-dir": "subuser"
+}
