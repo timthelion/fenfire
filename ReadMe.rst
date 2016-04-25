@@ -55,4 +55,6 @@ You can now open up another terminal and edit the source code. When you want to 
     $ cabal build ; cabal install
     $ ~/.cabal/bin/fenfire
 
-To build and run.
+If you end up having to edit the Dockerfile and want to update your dev environment simply exit out of the dev environment and run::
+
+    $ subuser dev fenfire --update
